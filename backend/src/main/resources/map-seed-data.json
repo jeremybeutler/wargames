@@ -1,0 +1,771 @@
+{
+  "alternateNames": {
+    "Joshua": "Northwatch",
+    "Bountiful": "Greenhaven",
+    "Mulek": "Stonehook",
+    "Ammonihah": "Bellspire",
+    "Noah": "Brookfall",
+    "Sidom": "Foxmere",
+    "Gid": "Thornford",
+    "Aaron": "Sunford",
+    "Omner": "Elmwatch",
+    "Zarahemla": "Dawnspire",
+    "Jershon": "Reedplain",
+    "Morianton": "Eastmarch",
+    "Gideon": "Westrun",
+    "Lehi": "Harborrest",
+    "Nephihah": "Highmeadow",
+    "Cumeni": "Copperfield",
+    "Zeezrom": "Reedwater",
+    "Manti": "Blueford",
+    "Sirion": "Gull Point",
+    "Hill Cumorah": "Echo Peak",
+    "Moron": "Pinewatch",
+    "Desolation": "Ashen Expanse",
+    "Land of Nephi": "Greenstone Reach",
+    "First Inheritance": "First Landing",
+    "Antionum": "Farmeadow",
+    "Helam": "Mossgate",
+    "Amulon": "Thistleford",
+    "Ishmael": "Old Orchard",
+    "Midian": "Copper Ridge",
+    "Nephi": "Pinewell",
+    "Jerusalem": "Stillwater",
+    "Waters of Mormon": "Silver Pool",
+    "Shamlon": "Longgrass",
+    "Middoni": "Foxbridge",
+    "Akish": "Crow's Rest",
+    "Abloam": "High Crag",
+    "Jashon": "Windbreak",
+    "Boaz": "Stonewell",
+    "Teancum": "Tidewatch",
+    "Hermounts": "Wolf Hills",
+    "Hill Ephraim": "Ephraim Heights",
+    "Hill Shim": "Shimmer Hill",
+    "Hill Manti": "Bluebell Rise",
+    "Hill Riplah": "Rippling Rise",
+    "Melek": "Hearthstead",
+    "Minon": "Sunmeadow",
+    "Sea West": "Western Sea",
+    "Sea East": "Eastern Sea",
+    "Narrow Strip of Wilderness": "Narrow Wilds",
+    "Middle-earth": "The Elder Lands",
+    "Eriador": "Westmarch",
+    "The Shire": "Greenhome",
+    "Rhovanion": "Eastreach",
+    "Rohan": "Horse Plains",
+    "Gondor": "Southwatch",
+    "Mordor": "Ashen Realm",
+    "Rhûn": "Sunrise Lands",
+    "Harad": "Far South",
+    "Hobbiton": "Hearthside",
+    "Bree": "Crossroads",
+    "Grey Havens": "Westharbor",
+    "Fornost": "Old Crown",
+    "Rivendell": "Hidden Vale",
+    "Moria": "Deepdelve",
+    "Lothlórien": "Golden Wood",
+    "Dale": "Lakeward",
+    "Lake-town": "Longlake Haven",
+    "Erebor": "Kingdom Under the Mountain",
+    "Edoras": "Horsehall",
+    "Helm’s Deep": "Deeping Hold",
+    "Isengard": "Ringkeep",
+    "Minas Tirith": "White Tower",
+    "Osgiliath": "Star Fortress",
+    "Minas Morgul": "Moon Tower",
+    "Mount Doom": "Fire Mountain",
+    "Black Gate": "Dark Gate",
+    "Pelargir": "Southport",
+    "Umbar": "Corsair Bay",
+    "Weathertop": "Windwatch Hill",
+    "Amon Hen": "Eagle Seat",
+    "Pelennor Fields": "White Fields",
+    "Paths of the Dead": "Ghost Road",
+    "Ithilien": "Green March",
+    "Cirith Ungol": "Spider Pass"
+  },
+  "tilePlaces": [
+    {
+      "name": "Hill Cumorah",
+      "x": 88,
+      "y": 3,
+      "tier": 0,
+      "kind": "region"
+    },
+    {
+      "name": "Desolation",
+      "x": 72,
+      "y": 19,
+      "tier": 0,
+      "kind": "region"
+    },
+    {
+      "name": "Bountiful",
+      "x": 65,
+      "y": 33.5,
+      "tier": 0,
+      "kind": "region"
+    },
+    {
+      "name": "Zarahemla",
+      "x": 48,
+      "y": 56.7,
+      "tier": 0,
+      "kind": "region"
+    },
+    {
+      "name": "Land of Nephi",
+      "x": 42,
+      "y": 74.5,
+      "tier": 0,
+      "kind": "region"
+    },
+    {
+      "name": "First Inheritance",
+      "x": 12,
+      "y": 89.2,
+      "tier": 0,
+      "kind": "region"
+    },
+    {
+      "name": "Sea West",
+      "x": 20.4,
+      "y": 41,
+      "tier": 0,
+      "kind": "region"
+    },
+    {
+      "name": "Sea East",
+      "x": 90,
+      "y": 67.4,
+      "tier": 0,
+      "kind": "region"
+    },
+    {
+      "name": "Abloam",
+      "x": 91.3,
+      "y": 7.2,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Jashon",
+      "x": 77.5,
+      "y": 11.5,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Boaz",
+      "x": 77.1,
+      "y": 16.4,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Teancum",
+      "x": 75.2,
+      "y": 24.2,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Bountiful",
+      "x": 71.1,
+      "y": 31,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Mulek",
+      "x": 76.8,
+      "y": 38.9,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Ammonihah",
+      "x": 54.2,
+      "y": 40.6,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Gid",
+      "x": 74.1,
+      "y": 42.4,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Noah",
+      "x": 53.6,
+      "y": 45.3,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Aaron",
+      "x": 65.6,
+      "y": 46.5,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Omner",
+      "x": 82.5,
+      "y": 46.5,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Zarahemla",
+      "x": 54.8,
+      "y": 52.9,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Morianton",
+      "x": 83,
+      "y": 53.1,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Lehi",
+      "x": 84.6,
+      "y": 56.2,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Gideon",
+      "x": 59.1,
+      "y": 56.4,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Nephihah",
+      "x": 73.8,
+      "y": 58.4,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Cumeni",
+      "x": 40.7,
+      "y": 65.9,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Zeezrom",
+      "x": 45.7,
+      "y": 67.4,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Manti",
+      "x": 50.2,
+      "y": 69.2,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Sirion",
+      "x": 75.4,
+      "y": 73.2,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Nephi",
+      "x": 41.9,
+      "y": 88.7,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Jerusalem",
+      "x": 54.2,
+      "y": 88.3,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Moron",
+      "x": 56.6,
+      "y": 12.8,
+      "tier": 1,
+      "kind": "landmark"
+    },
+    {
+      "name": "Joshua",
+      "x": 58.3,
+      "y": 29,
+      "tier": 1,
+      "kind": "landmark"
+    },
+    {
+      "name": "Sidom",
+      "x": 59,
+      "y": 42.2,
+      "tier": 1,
+      "kind": "landmark"
+    },
+    {
+      "name": "Melek",
+      "x": 51,
+      "y": 47.4,
+      "tier": 1,
+      "kind": "landmark"
+    },
+    {
+      "name": "Jershon",
+      "x": 74,
+      "y": 50.5,
+      "tier": 1,
+      "kind": "landmark"
+    },
+    {
+      "name": "Minon",
+      "x": 52.8,
+      "y": 57.8,
+      "tier": 1,
+      "kind": "landmark"
+    },
+    {
+      "name": "Antionum",
+      "x": 76.3,
+      "y": 66.2,
+      "tier": 1,
+      "kind": "landmark"
+    },
+    {
+      "name": "Hermounts",
+      "x": 37.2,
+      "y": 45.5,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "Hill Ephraim",
+      "x": 66.2,
+      "y": 14.8,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "Hill Shim",
+      "x": 84.8,
+      "y": 13,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "Akish",
+      "x": 69.5,
+      "y": 7.2,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "Hill Manti",
+      "x": 52.7,
+      "y": 49.6,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "Hill Riplah",
+      "x": 52.6,
+      "y": 72.6,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "Ishmael",
+      "x": 30.6,
+      "y": 76,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "Midian",
+      "x": 35.1,
+      "y": 83.3,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "Helam",
+      "x": 51.6,
+      "y": 77.4,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "Amulon",
+      "x": 60.2,
+      "y": 78.5,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "Narrow Strip of Wilderness",
+      "x": 66.5,
+      "y": 77.7,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "Waters of Mormon",
+      "x": 50.4,
+      "y": 90,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "Shamlon",
+      "x": 30.8,
+      "y": 92,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "Middoni",
+      "x": 35.9,
+      "y": 96.5,
+      "tier": 2,
+      "kind": "landmark"
+    }
+  ],
+  "middleEarthPlaces": [
+    {
+      "name": "The Shire",
+      "x": 25,
+      "y": 34,
+      "tier": 0,
+      "kind": "region"
+    },
+    {
+      "name": "Eriador",
+      "x": 31,
+      "y": 44,
+      "tier": 0,
+      "kind": "region"
+    },
+    {
+      "name": "Rhovanion",
+      "x": 68,
+      "y": 43,
+      "tier": 0,
+      "kind": "region"
+    },
+    {
+      "name": "Rohan",
+      "x": 54,
+      "y": 61,
+      "tier": 0,
+      "kind": "region"
+    },
+    {
+      "name": "Gondor",
+      "x": 43,
+      "y": 80,
+      "tier": 0,
+      "kind": "region"
+    },
+    {
+      "name": "Mordor",
+      "x": 79,
+      "y": 70,
+      "tier": 0,
+      "kind": "region"
+    },
+    {
+      "name": "Rhûn",
+      "x": 89,
+      "y": 43,
+      "tier": 0,
+      "kind": "region"
+    },
+    {
+      "name": "Harad",
+      "x": 66,
+      "y": 93,
+      "tier": 0,
+      "kind": "region"
+    },
+    {
+      "name": "Grey Havens",
+      "x": 15,
+      "y": 23,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Fornost",
+      "x": 32,
+      "y": 27,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Hobbiton",
+      "x": 24,
+      "y": 35,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Bree",
+      "x": 34,
+      "y": 40,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Rivendell",
+      "x": 48,
+      "y": 32,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Moria",
+      "x": 45,
+      "y": 47,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Lothlórien",
+      "x": 58,
+      "y": 44,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Erebor",
+      "x": 82,
+      "y": 16,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Dale",
+      "x": 78,
+      "y": 22,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Lake-town",
+      "x": 75,
+      "y": 26,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Isengard",
+      "x": 44,
+      "y": 60,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Edoras",
+      "x": 56,
+      "y": 66,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Helm’s Deep",
+      "x": 46,
+      "y": 68,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Minas Tirith",
+      "x": 59,
+      "y": 78,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Osgiliath",
+      "x": 64,
+      "y": 77,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Pelargir",
+      "x": 56,
+      "y": 84,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Minas Morgul",
+      "x": 75,
+      "y": 72,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Barad-dûr",
+      "x": 80,
+      "y": 70,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Mount Doom",
+      "x": 83,
+      "y": 67,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Black Gate",
+      "x": 74,
+      "y": 61,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Umbar",
+      "x": 43,
+      "y": 94,
+      "tier": 1,
+      "kind": "town"
+    },
+    {
+      "name": "Misty Mountains",
+      "x": 44,
+      "y": 39,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "Ered Luin",
+      "x": 23,
+      "y": 25,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "Mirkwood",
+      "x": 68,
+      "y": 34,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "Grey Mountains",
+      "x": 73,
+      "y": 12,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "Iron Hills",
+      "x": 92,
+      "y": 34,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "Fangorn Forest",
+      "x": 63,
+      "y": 58,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "White Mountains",
+      "x": 48,
+      "y": 76,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "Dead Marshes",
+      "x": 68,
+      "y": 59,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "Emyn Muil",
+      "x": 69,
+      "y": 67,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "Mount Gundabad",
+      "x": 49,
+      "y": 17,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "Anduin",
+      "x": 57,
+      "y": 48,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "Weathertop",
+      "x": 39,
+      "y": 36,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "Amon Hen",
+      "x": 62,
+      "y": 51,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "Pelennor Fields",
+      "x": 61,
+      "y": 79,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "Paths of the Dead",
+      "x": 48,
+      "y": 77,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "Ithilien",
+      "x": 68,
+      "y": 72,
+      "tier": 2,
+      "kind": "landmark"
+    },
+    {
+      "name": "Cirith Ungol",
+      "x": 76,
+      "y": 75,
+      "tier": 2,
+      "kind": "landmark"
+    }
+  ]
+}
