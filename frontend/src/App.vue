@@ -1,5 +1,8 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import defaultCampaignData from './data/campaign-seed.json'
+import { localDatabase, validateLegacyExport } from './data/encryptedDatabase.js'
+import { DEFAULT_RULESET, applyArmyProposal, parseRuleset } from './multiplayer/gameProtocol.js'
 
 const ART_MAP = { width: 1579, height: 797 }
 const TILE_SIZE = 256
@@ -14,6 +17,7 @@ const TERRAIN_TYPES = [
   { value: 'mountain', label: 'Mountains', name: 'Mountain', color: '#bd8b69' },
   { value: 'river', label: 'Rivers', name: 'River', color: '#58a9c7' },
   { value: 'forest', label: 'Forests', name: 'Forest', color: '#77a66b' },
+  { value: 'plains', label: 'Plains', name: 'Plains', color: '#d5bf6a' },
   { value: 'other', label: 'Other', name: 'Terrain', color: '#d1b56c' },
 ]
 const campaign = ref(null)
@@ -22,8 +26,16 @@ const selectedCampaignSlug = ref('book-of-mormon')
 const campaignPlaces = ref([])
 const referenceRoutes = ref([])
 const referenceEvents = ref([])
-const apiError = ref('')
+const dataError = ref('')
 const isLoading = ref(false)
+const databaseUnlocked = ref(false)
+const storageMode = ref('checking')
+const storagePassphrase = ref('')
+const storagePassphraseConfirmation = ref('')
+const storageError = ref('')
+const databaseNotice = ref('')
+const legacyExportFile = ref(null)
+const backupImportFile = ref(null)
 const selectedLocation = ref('')
 const placing = ref(false)
 const zoom = ref(1)
@@ -40,6 +52,18 @@ const terrainBrushSize = ref(3)
 const paintingTerrain = ref(false)
 const erasingTerrain = ref(false)
 const activeTerrainStroke = ref(null)
+const multiplayerName = ref('')
+const meteredPublishableKey = ref('')
+const invitationCode = ref('')
+const joinCode = ref('')
+const multiplayerRole = ref(null)
+const multiplayerStatus = ref('disconnected')
+const multiplayerError = ref('')
+const multiplayerNotice = ref('')
+const pendingJoinRequests = ref([])
+const pendingProposals = ref([])
+const gameRuleset = ref({ ...DEFAULT_RULESET })
+const rulesetDraft = ref(JSON.stringify(DEFAULT_RULESET, null, 2))
 const showReferenceEvents = ref(false)
 const showCharacterPaths = ref(false)
 const selectedEventId = ref(null)
@@ -59,6 +83,8 @@ let movingArmyStart = null
 let zoomTimer = null
 let campaignLoadId = 0
 let terrainLoadId = 0
+let gameNetwork = null
+let roomWriteQueue = Promise.resolve()
 
 function terrainMapKeyForMode(mode) {
   return mode === 'middle-earth' ? 'middle-earth' : 'ces'
@@ -123,37 +149,479 @@ function campaignSlugForMode(mode) {
   return selectedCampaignSlug.value
 }
 
-async function apiRequest(url, options) {
-  const response = await fetch(url, options)
-  if (response.status === 204) return null
-
-  const contentType = response.headers.get('content-type') || ''
-  const isJson = contentType.includes('/json') || contentType.includes('+json')
-  const result = isJson ? await response.json() : await response.text()
-  if (!response.ok) {
-    const message = result && typeof result === 'object'
-      ? result.message || result.error
-      : result
-    throw new Error(message || `Request failed (${response.status})`)
-  }
-  return result
+function reportDataError(error) {
+  dataError.value = error instanceof Error ? error.message : 'The local data operation failed'
 }
 
-function reportApiError(error) {
-  apiError.value = error instanceof Error ? error.message : 'The API request failed'
+function reportMultiplayerError(error) {
+  multiplayerError.value = error instanceof Error ? error.message : 'The multiplayer request failed'
+}
+
+function loadMeteredPublishableKey() {
+  const configuredKey = import.meta.env.VITE_METERED_PUBLISHABLE_KEY?.trim() || ''
+  try {
+    meteredPublishableKey.value =
+      configuredKey || localStorage.getItem('bom-wargames-metered-publishable-key') || ''
+  } catch (error) {
+    meteredPublishableKey.value = configuredKey
+    reportMultiplayerError(new Error(`Could not load the saved Metered key: ${error.message}`))
+  }
+}
+
+function saveMeteredPublishableKey() {
+  const key = meteredPublishableKey.value.trim()
+  if (!/^pk_(live|test)_[A-Za-z0-9_-]+$/.test(key)) {
+    throw new Error('Enter a valid Metered publishable key (pk_live_...)')
+  }
+  try {
+    localStorage.setItem('bom-wargames-metered-publishable-key', key)
+  } catch (error) {
+    throw new Error(`Could not save the Metered key in this browser: ${error.message}`)
+  }
+  meteredPublishableKey.value = key
+}
+
+async function readSelectedJsonFile(file, maximumBytes = 25 * 1024 * 1024) {
+  if (!file) return null
+  if (file.size > maximumBytes) throw new Error('The selected file is too large')
+  try {
+    return JSON.parse(await file.text())
+  } catch {
+    throw new Error('The selected file is not valid JSON')
+  }
+}
+
+async function inspectLocalDatabase() {
+  try {
+    storageMode.value = await localDatabase.hasDatabase() ? 'unlock' : 'setup'
+  } catch (error) {
+    storageMode.value = 'error'
+    storageError.value = error instanceof Error ? error.message : 'Could not open IndexedDB'
+  }
+}
+
+async function ensureSeedData() {
+  const campaigns = await localDatabase.readCollection('campaigns')
+  if (campaigns.length === 0) {
+    await localDatabase.initializeCollections(defaultCampaignData)
+  }
+}
+
+async function unlockLocalDatabase() {
+  storageError.value = ''
+  try {
+    if (storageMode.value === 'setup') {
+      if (storagePassphrase.value.length < 12) {
+        throw new Error('Use a passphrase with at least 12 characters')
+      }
+      if (storagePassphrase.value !== storagePassphraseConfirmation.value) {
+        throw new Error('The passphrases do not match')
+      }
+      const legacyExport = legacyExportFile.value
+        ? validateLegacyExport(await readSelectedJsonFile(legacyExportFile.value))
+        : null
+      await localDatabase.create(
+        storagePassphrase.value,
+        legacyExport || defaultCampaignData,
+      )
+    } else {
+      await localDatabase.unlock(storagePassphrase.value)
+      await ensureSeedData()
+    }
+
+    databaseUnlocked.value = true
+    storagePassphrase.value = ''
+    storagePassphraseConfirmation.value = ''
+    await Promise.all([loadCampaignData(), loadTerrainRegions()])
+  } catch (error) {
+    storageError.value = error instanceof Error ? error.message : 'Could not unlock local data'
+  }
+}
+
+function chooseLegacyExport(event) {
+  legacyExportFile.value = event.target.files?.[0] || null
+}
+
+function chooseBackupImport(event) {
+  backupImportFile.value = event.target.files?.[0] || null
+}
+
+async function restoreEncryptedBackup() {
+  storageError.value = ''
+  try {
+    const backup = await readSelectedJsonFile(backupImportFile.value)
+    if (!backup) throw new Error('Choose an encrypted backup file first')
+    await localDatabase.restoreEncryptedBackup(backup)
+    storageMode.value = 'unlock'
+    backupImportFile.value = null
+  } catch (error) {
+    storageError.value = error instanceof Error ? error.message : 'Could not restore the encrypted backup'
+  }
+}
+
+function currentGameState() {
+  return {
+    campaignSlug: campaignSlugForMode(mapMode.value),
+    mapMode: mapMode.value,
+    armies: armies.value.map(army => ({ ...army })),
+    ruleset: { ...gameRuleset.value },
+  }
+}
+
+function stopMapTools() {
+  placing.value = false
+  paintingTerrain.value = false
+  erasingTerrain.value = false
+  activeTerrainStroke.value = null
+  selectedArmy.value = null
+}
+
+function applyMultiplayerState(state) {
+  if (!state
+    || state.campaignSlug !== campaignSlugForMode(mapMode.value)
+    || state.mapMode !== mapMode.value
+    || !Array.isArray(state.armies)
+    || state.armies.some(army => !army
+      || typeof army !== 'object'
+      || army.id === undefined
+      || !Number.isFinite(army.x)
+      || !Number.isFinite(army.y)
+      || army.x < 0
+      || army.x > 100
+      || army.y < 0
+      || army.y > 100)) {
+    reportMultiplayerError(new Error('The host sent an invalid game snapshot'))
+    return
+  }
+  try {
+    gameRuleset.value = parseRuleset(state.ruleset)
+    rulesetDraft.value = JSON.stringify(gameRuleset.value, null, 2)
+    armies.value = state.armies.map(army => ({ ...army }))
+    selectedArmy.value = null
+    multiplayerNotice.value = 'Game state synchronized with the host.'
+    if (multiplayerRole.value === 'guest' && gameNetwork?.roomId) {
+      void saveRoomSnapshot(state, `room:${gameNetwork.roomId}`).catch(reportDataError)
+    }
+  } catch (error) {
+    reportMultiplayerError(error)
+  }
+}
+
+async function createGameNetwork() {
+  const { GameNetwork } = await import('./multiplayer/gameNetwork.js')
+  gameNetwork = new GameNetwork({
+    onStatus: status => { multiplayerStatus.value = status },
+    onError: reportMultiplayerError,
+    onNotice: notice => { multiplayerNotice.value = notice },
+    onJoinRequest: request => {
+      if (!pendingJoinRequests.value.some(item => item.peerId === request.peerId)) {
+        pendingJoinRequests.value = [...pendingJoinRequests.value, request]
+      }
+    },
+    onProposal: proposal => {
+      if (pendingProposals.value.some(item => item.proposalId === proposal.proposalId)) return
+      pendingProposals.value = [...pendingProposals.value, proposal]
+      if (!gameRuleset.value.requireHostApproval) {
+        void resolveGameProposal(proposal, true)
+      }
+    },
+    onState: applyMultiplayerState,
+    onProposalResult: result => {
+      multiplayerNotice.value = result.accepted
+        ? 'The host approved your proposed move.'
+        : `The host rejected your proposed move${result.reason ? `: ${result.reason}` : '.'}`
+    },
+    onRejected: () => {
+      multiplayerNotice.value = 'The host did not approve your join request.'
+    },
+  })
+  return gameNetwork
+}
+
+function saveRoomSnapshot(state, key) {
+  const write = roomWriteQueue.then(async () => {
+    const rooms = await localDatabase.readCollection('rooms')
+    const record = { ...state, key, savedAt: new Date().toISOString() }
+    await localDatabase.writeCollection('rooms', [
+      ...rooms.filter(room => room.key !== key),
+      record,
+    ])
+  })
+  roomWriteQueue = write.catch(reportDataError)
+  return write
+}
+
+async function saveHostGameState(broadcast = true) {
+  if (multiplayerRole.value !== 'host' || !gameNetwork) return
+  const state = currentGameState()
+  try {
+    await saveRoomSnapshot(
+      state,
+      `host:${state.campaignSlug}:${state.mapMode}`,
+    )
+  } catch (error) {
+    reportDataError(error)
+  }
+  if (broadcast) await gameNetwork.broadcastState(state).catch(reportMultiplayerError)
+}
+
+async function startMultiplayerHost() {
+  multiplayerError.value = ''
+  multiplayerNotice.value = ''
+  if (!campaign.value) {
+    reportMultiplayerError(new Error('Campaign data must finish loading before you host a game'))
+    return
+  }
+  try {
+    const key = `host:${campaignSlugForMode(mapMode.value)}:${mapMode.value}`
+    const roomRecords = await localDatabase.readCollection('rooms')
+    const restored = roomRecords.find(room => room.key === key)
+    if (restored) {
+      if (!Array.isArray(restored.armies)) throw new Error('The saved game has no army list')
+      gameRuleset.value = parseRuleset(restored.ruleset)
+      armies.value = restored.armies.map(army => ({ ...army }))
+    } else {
+      gameRuleset.value = { ...DEFAULT_RULESET }
+    }
+  } catch (error) {
+    reportDataError(new Error(`Could not restore the saved host game: ${error.message}`))
+    return
+  }
+  rulesetDraft.value = JSON.stringify(gameRuleset.value, null, 2)
+  pendingJoinRequests.value = []
+  pendingProposals.value = []
+  stopMapTools()
+
+  try {
+    saveMeteredPublishableKey()
+    const network = await createGameNetwork()
+    multiplayerRole.value = 'host'
+    invitationCode.value = await network.host(
+      meteredPublishableKey.value,
+      multiplayerName.value,
+      campaignSlugForMode(mapMode.value),
+      mapMode.value,
+    )
+    await saveHostGameState()
+  } catch (error) {
+    gameNetwork = null
+    multiplayerRole.value = null
+    reportMultiplayerError(error)
+    void loadCampaignData()
+  }
+}
+
+async function joinMultiplayerGame() {
+  multiplayerError.value = ''
+  multiplayerNotice.value = ''
+  let invite
+  try {
+    invite = JSON.parse(joinCode.value)
+  } catch {
+    reportMultiplayerError(new Error('The invitation must be valid JSON'))
+    return
+  }
+  if (typeof invite?.campaignSlug !== 'string'
+    || !['tiles', 'artwork', 'middle-earth'].includes(invite.mapMode)) {
+    reportMultiplayerError(new Error('The invitation does not include a supported campaign and map'))
+    return
+  }
+  if ((invite.mapMode === 'middle-earth' && invite.campaignSlug !== 'middle-earth')
+    || (invite.mapMode !== 'middle-earth'
+      && !campaigns.value.some(item => item.slug === invite.campaignSlug))) {
+    reportMultiplayerError(new Error('The invited campaign is not available in local campaign data'))
+    return
+  }
+  if (invite.mapMode === 'middle-earth') {
+    mapMode.value = 'middle-earth'
+  } else {
+    mapMode.value = invite.mapMode
+    selectedCampaignSlug.value = invite.campaignSlug
+  }
+  await loadCampaignData(mapMode.value)
+  if (!campaign.value || campaign.value.slug !== invite.campaignSlug) {
+    reportMultiplayerError(new Error('Could not load the invited campaign from local storage'))
+    return
+  }
+  await loadTerrainRegions(mapMode.value)
+  await nextTick()
+  measureMap()
+  pendingJoinRequests.value = []
+  pendingProposals.value = []
+  stopMapTools()
+
+  try {
+    saveMeteredPublishableKey()
+    const network = await createGameNetwork()
+    multiplayerRole.value = 'guest'
+    await network.join(joinCode.value, meteredPublishableKey.value, multiplayerName.value)
+  } catch (error) {
+    const failedRole = multiplayerRole.value
+    gameNetwork = null
+    multiplayerRole.value = null
+    reportMultiplayerError(error)
+    if (failedRole === 'guest') void loadCampaignData()
+  }
+}
+
+async function stopMultiplayerGame() {
+  const network = gameNetwork
+  const previousRole = multiplayerRole.value
+  gameNetwork = null
+  multiplayerRole.value = null
+  invitationCode.value = ''
+  pendingJoinRequests.value = []
+  pendingProposals.value = []
+  multiplayerError.value = ''
+  if (network) {
+    try {
+      await network.stop()
+    } catch (error) {
+      reportMultiplayerError(error)
+    }
+  }
+  if (previousRole) void loadCampaignData()
+}
+
+async function approveJoinRequest(request) {
+  multiplayerError.value = ''
+  try {
+    await gameNetwork.approvePeer(request.peerId, currentGameState())
+    pendingJoinRequests.value = pendingJoinRequests.value
+      .filter(item => item.peerId !== request.peerId)
+    multiplayerNotice.value = `${request.playerName} joined the game.`
+  } catch (error) {
+    reportMultiplayerError(error)
+  }
+}
+
+async function rejectJoinRequest(request) {
+  multiplayerError.value = ''
+  try {
+    await gameNetwork.rejectPeer(request.peerId)
+    pendingJoinRequests.value = pendingJoinRequests.value
+      .filter(item => item.peerId !== request.peerId)
+  } catch (error) {
+    reportMultiplayerError(error)
+  }
+}
+
+async function resolveGameProposal(proposal, accepted) {
+  if (!gameNetwork || multiplayerRole.value !== 'host') return
+  multiplayerError.value = ''
+  let reason = ''
+  let nextState = currentGameState()
+  if (accepted) {
+    const result = applyArmyProposal(nextState, proposal)
+    if (result.error) {
+      accepted = false
+      reason = result.error
+    } else {
+      nextState = { ...nextState, armies: result.state.armies }
+      armies.value = result.state.armies
+      await saveHostGameState(false)
+    }
+  }
+  pendingProposals.value = pendingProposals.value
+    .filter(item => item.proposalId !== proposal.proposalId)
+  try {
+    await gameNetwork.resolveProposal(
+      proposal.peerId,
+      proposal.proposalId,
+      accepted,
+      nextState,
+      reason,
+    )
+    if (accepted) {
+      return
+    } else if (reason) {
+      multiplayerNotice.value = `Proposal rejected: ${reason}`
+    }
+  } catch (error) {
+    reportMultiplayerError(error)
+    if (accepted) {
+      await gameNetwork.broadcastState(currentGameState()).catch(reportMultiplayerError)
+    }
+  }
+}
+
+async function publishRuleset() {
+  multiplayerError.value = ''
+  try {
+    gameRuleset.value = parseRuleset(rulesetDraft.value)
+    rulesetDraft.value = JSON.stringify(gameRuleset.value, null, 2)
+    await saveHostGameState()
+  } catch (error) {
+    reportMultiplayerError(error)
+  }
+}
+
+async function copyInvitation() {
+  try {
+    await navigator.clipboard.writeText(invitationCode.value)
+    multiplayerNotice.value = 'Invitation copied to the clipboard.'
+  } catch (error) {
+    reportMultiplayerError(error)
+  }
+}
+
+async function downloadEncryptedBackup() {
+  try {
+    const backup = await localDatabase.exportEncryptedBackup()
+    const blob = new Blob([backup], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `bom-wargames-encrypted-${new Date().toISOString().slice(0, 10)}.json`
+    link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+    databaseNotice.value = 'Encrypted backup downloaded. Keep your passphrase safe.'
+  } catch (error) {
+    reportDataError(error)
+  }
+}
+
+function lockLocalDatabase() {
+  if (gameNetwork) {
+    dataError.value = 'Leave the multiplayer room before locking the local database'
+    return
+  }
+  campaignLoadId += 1
+  terrainLoadId += 1
+  localDatabase.lock()
+  databaseUnlocked.value = false
+  isLoading.value = false
+  campaign.value = null
+  campaigns.value = []
+  campaignPlaces.value = []
+  referenceRoutes.value = []
+  referenceEvents.value = []
+  armies.value = []
+  terrainRegions.value = []
+  invitationCode.value = ''
+  joinCode.value = ''
+  pendingJoinRequests.value = []
+  pendingProposals.value = []
+  gameRuleset.value = { ...DEFAULT_RULESET }
+  rulesetDraft.value = JSON.stringify(DEFAULT_RULESET, null, 2)
+  multiplayerError.value = ''
+  multiplayerNotice.value = ''
+  stopMapTools()
+  storageMode.value = 'unlock'
+  dataError.value = ''
+  databaseNotice.value = ''
 }
 
 function retryData() {
-  apiError.value = ''
-  void loadCampaignData()
-  void loadTerrainRegions()
+  dataError.value = ''
+  void Promise.all([loadCampaignData(), loadTerrainRegions()])
 }
 
 async function loadCampaignData(mode = mapMode.value) {
   const requestId = ++campaignLoadId
   const slug = campaignSlugForMode(mode)
   isLoading.value = true
-  apiError.value = ''
+  dataError.value = ''
   campaign.value = null
   campaignPlaces.value = []
   referenceRoutes.value = []
@@ -161,30 +629,29 @@ async function loadCampaignData(mode = mapMode.value) {
   armies.value = []
 
   try {
-    const availableCampaigns = await apiRequest('/api/campaigns')
+    const [availableCampaigns, allPlaces, allRoutes, allEvents, allArmies] = await Promise.all([
+      localDatabase.readCollection('campaigns'),
+      localDatabase.readCollection('places'),
+      localDatabase.readCollection('routes'),
+      localDatabase.readCollection('events'),
+      localDatabase.readCollection('armies'),
+    ])
     if (requestId !== campaignLoadId) return
     campaigns.value = availableCampaigns
     const selectedCampaign = campaigns.value.find(item => item.slug === slug)
     if (!selectedCampaign) throw new Error(`Campaign "${slug}" was not found`)
 
-    const query = `?campaignId=${selectedCampaign.id}`
-    const [places, routes, events, savedArmies] = await Promise.all([
-      apiRequest(`/api/places${query}`),
-      apiRequest(`/api/routes${query}`),
-      apiRequest(`/api/events${query}`),
-      apiRequest(`/api/armies${query}`),
-    ])
-
-    if (requestId !== campaignLoadId) return
     campaign.value = selectedCampaign
-    campaignPlaces.value = places
-    referenceRoutes.value = routes
-    referenceEvents.value = events.sort((left, right) =>
+    campaignPlaces.value = allPlaces.filter(place => place.campaignId === selectedCampaign.id)
+    referenceRoutes.value = allRoutes.filter(route => route.campaignId === selectedCampaign.id)
+    referenceEvents.value = allEvents
+      .filter(event => event.campaignId === selectedCampaign.id)
+      .sort((left, right) =>
       (left.eventNumber ?? 0) - (right.eventNumber ?? 0))
-    armies.value = savedArmies
+    armies.value = allArmies.filter(army => army.campaignId === selectedCampaign.id)
   } catch (error) {
     if (requestId !== campaignLoadId) return
-    reportApiError(error)
+    reportDataError(error)
   } finally {
     if (requestId === campaignLoadId) isLoading.value = false
   }
@@ -196,13 +663,12 @@ async function loadTerrainRegions(mode = mapMode.value) {
   terrainRegions.value = []
 
   try {
-    const regions = await apiRequest(
-      `/api/terrain-regions?mapKey=${encodeURIComponent(mapKey)}&mapLayer=${encodeURIComponent(mode)}`,
-    )
+    const allRegions = await localDatabase.readCollection('terrainRegions')
     if (requestId !== terrainLoadId) return
-    terrainRegions.value = regions
+    terrainRegions.value = allRegions.filter(region =>
+      region.mapKey === mapKey && region.mapLayer === mode)
   } catch (error) {
-    if (requestId === terrainLoadId) reportApiError(error)
+    if (requestId === terrainLoadId) reportDataError(error)
   }
 }
 
@@ -409,17 +875,39 @@ async function onPointerUp() {
   const army = armies.value.find(item => item.id === armyId)
   if (!army || (army.x === start.x && army.y === start.y)) return
 
-  try {
-    const savedArmy = await apiRequest(`/api/armies/${armyId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(armyRequestBody(army)),
+  const destination = { x: army.x, y: army.y }
+  if (multiplayerRole.value) {
+    army.x = start.x
+    army.y = start.y
+    if (multiplayerRole.value === 'guest') {
+      void gameNetwork.propose('army.move', { id: armyId, ...destination })
+        .catch(reportMultiplayerError)
+      return
+    }
+
+    const result = applyArmyProposal(currentGameState(), {
+      action: 'army.move',
+      payload: { id: armyId, ...destination },
     })
-    Object.assign(army, savedArmy)
+    if (result.error) {
+      multiplayerNotice.value = result.error
+      return
+    }
+    armies.value = result.state.armies
+    await saveHostGameState()
+    return
+  }
+
+  try {
+    const savedArmies = await localDatabase.readCollection('armies')
+    const index = savedArmies.findIndex(item => item.id === armyId)
+    if (index < 0) throw new Error('The army no longer exists in local storage')
+    savedArmies[index] = { ...army }
+    await localDatabase.writeCollection('armies', savedArmies)
   } catch (error) {
     army.x = start.x
     army.y = start.y
-    reportApiError(error)
+    reportDataError(error)
   }
 }
 
@@ -433,16 +921,14 @@ function onPointerCancel() {
 
 async function saveTerrainStroke(stroke) {
   try {
-    const region = await apiRequest('/api/terrain-regions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(stroke),
-    })
+    const regions = await localDatabase.readCollection('terrainRegions')
+    const region = { ...stroke, id: crypto.randomUUID() }
+    await localDatabase.writeCollection('terrainRegions', [...regions, region])
     terrainRegions.value = [...terrainRegions.value, region]
     terrainName.value = ''
-    apiError.value = ''
+    dataError.value = ''
   } catch (error) {
-    reportApiError(error)
+    reportDataError(error)
   }
 }
 
@@ -480,11 +966,12 @@ function toggleArmyPlacement() {
 
 async function removeTerrainRegion(region) {
   try {
-    await apiRequest(`/api/terrain-regions/${region.id}`, { method: 'DELETE' })
+    const regions = await localDatabase.readCollection('terrainRegions')
+    await localDatabase.writeCollection('terrainRegions', regions.filter(item => item.id !== region.id))
     terrainRegions.value = terrainRegions.value.filter(item => item.id !== region.id)
-    apiError.value = ''
+    dataError.value = ''
   } catch (error) {
-    reportApiError(error)
+    reportDataError(error)
   }
 }
 
@@ -497,57 +984,104 @@ function beginArmyMove(event, army) {
   viewport.value.setPointerCapture(event.pointerId)
 }
 
-function armyRequestBody(army) {
-  return {
-    campaignId: campaign.value.id,
-    name: army.name,
-    faction: army.faction,
-    side: army.side,
-    x: army.x,
-    y: army.y,
-    unitCount: army.unitCount,
-    description: army.description,
-  }
-}
-
 async function createArmy(point) {
   if (!campaign.value) {
-    apiError.value = 'Campaign data is not loaded'
+    dataError.value = 'Campaign data is not loaded'
     return
   }
   const faction = mapMode.value === 'middle-earth' ? 'Free Peoples' : 'Nephites'
-  try {
-    const army = await apiRequest('/api/armies', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        campaignId: campaign.value.id,
-        name: `${faction} Army ${armies.value.length + 1}`,
+  if (multiplayerRole.value === 'guest') {
+    try {
+      await gameNetwork.propose('army.create', {
         faction,
         side: 'blue',
         ...point,
         unitCount: 1,
-      }),
+      })
+      placing.value = false
+      multiplayerNotice.value = 'Army placement proposed to the host.'
+    } catch (error) {
+      reportMultiplayerError(error)
+    }
+    return
+  }
+  if (multiplayerRole.value === 'host') {
+    const result = applyArmyProposal(currentGameState(), {
+      action: 'army.create',
+      payload: {
+        faction,
+        side: 'blue',
+        ...point,
+        unitCount: 1,
+      },
     })
+    if (result.error) {
+      multiplayerNotice.value = result.error
+      return
+    }
+    armies.value = result.state.armies
+    selectedArmy.value = result.result.id
+    placing.value = false
+    await saveHostGameState()
+    return
+  }
+  try {
+    const savedArmies = await localDatabase.readCollection('armies')
+    const army = {
+      id: crypto.randomUUID(),
+      campaignId: campaign.value.id,
+      name: `${faction} Army ${savedArmies.filter(item => item.campaignId === campaign.value.id).length + 1}`,
+      faction,
+      side: 'blue',
+      ...point,
+      unitCount: 1,
+      description: '',
+    }
+    await localDatabase.writeCollection('armies', [...savedArmies, army])
     armies.value.push(army)
     selectedArmy.value = army.id
     placing.value = false
-    apiError.value = ''
+    dataError.value = ''
   } catch (error) {
-    reportApiError(error)
+    reportDataError(error)
   }
 }
 
 async function removeSelectedArmy() {
   if (selectedArmy.value === null) return
   const armyId = selectedArmy.value
+  if (multiplayerRole.value === 'guest') {
+    try {
+      await gameNetwork.propose('army.remove', { id: armyId })
+      selectedArmy.value = null
+      multiplayerNotice.value = 'Army removal proposed to the host.'
+    } catch (error) {
+      reportMultiplayerError(error)
+    }
+    return
+  }
+  if (multiplayerRole.value === 'host') {
+    const result = applyArmyProposal(currentGameState(), {
+      action: 'army.remove',
+      payload: { id: armyId },
+    })
+    if (result.error) {
+      multiplayerNotice.value = result.error
+      return
+    }
+    armies.value = result.state.armies
+    selectedArmy.value = null
+    await saveHostGameState()
+    return
+  }
   try {
-    await apiRequest(`/api/armies/${armyId}`, { method: 'DELETE' })
+    const savedArmies = await localDatabase.readCollection('armies')
+    await localDatabase.writeCollection('armies', savedArmies.filter(army => army.id !== armyId))
     armies.value = armies.value.filter(army => army.id !== armyId)
     selectedArmy.value = null
-    apiError.value = ''
+    dataError.value = ''
   } catch (error) {
-    reportApiError(error)
+    reportDataError(error)
   }
 }
 
@@ -719,7 +1253,17 @@ function drawTileCanvas() {
 watch(mapMode, async mode => {
   if (mode === 'tiles') await loadCesTiles()
   if (mode === 'middle-earth') loadMiddleEarthMap()
-  void loadTerrainRegions(mode)
+  if (databaseUnlocked.value) void loadTerrainRegions(mode)
+})
+
+watch(databaseUnlocked, async unlocked => {
+  await nextTick()
+  if (unlocked) {
+    viewport.value?.addEventListener('wheel', handleWheel, { passive: false })
+    measureMap()
+  } else {
+    viewport.value?.removeEventListener('wheel', handleWheel)
+  }
 })
 
 watch([mapMode, cesTiles, zoom, scaleRevision], async () => {
@@ -728,17 +1272,21 @@ watch([mapMode, cesTiles, zoom, scaleRevision], async () => {
 })
 
 onMounted(() => {
-  measureMap()
-  viewport.value.addEventListener('wheel', handleWheel, { passive: false })
   window.addEventListener('resize', measureMap)
   window.addEventListener('keydown', onKeydown)
-  void loadCampaignData()
-  void loadTerrainRegions()
+  loadMeteredPublishableKey()
+  void inspectLocalDatabase()
   if (mapMode.value === 'tiles') loadCesTiles()
 })
 
 onBeforeUnmount(() => {
   window.clearTimeout(zoomTimer)
+  if (gameNetwork) {
+    const network = gameNetwork
+    gameNetwork = null
+    void network.stop().catch(error => console.error('Failed to stop multiplayer network', error))
+  }
+  localDatabase.lock()
   viewport.value?.removeEventListener('wheel', handleWheel)
   window.removeEventListener('resize', measureMap)
   window.removeEventListener('keydown', onKeydown)
@@ -747,24 +1295,78 @@ onBeforeUnmount(() => {
 
 <template>
   <main class="app-shell">
-    <header class="topbar">
-      <a class="brand" href="#" aria-label="BOM Wargames home">
-        <span class="brand-mark">B</span>
-        <span class="brand-copy"><strong>BOM WARGAMES</strong><small>FIELD MAP · ALMA 52</small></span>
-      </a>
-      <div class="topbar-right">
-        <span class="status-dot"></span><span class="status-text">SANDBOX</span>
-        <button class="profile" aria-label="Player profile">JB</button>
+    <section v-if="!databaseUnlocked" class="storage-gate">
+      <div class="storage-card">
+        <div class="section-eyebrow">PRIVATE LOCAL STORAGE</div>
+        <h1>{{ storageMode === 'setup' ? 'Create your local campaign database' : 'Unlock your campaign data' }}</h1>
+        <p class="intro">Campaign data and your saved map edits stay in this browser. Records in IndexedDB are encrypted with AES-256-GCM; your passphrase is used to derive the key and is never stored or sent.</p>
+        <div v-if="storageMode === 'checking'" class="local-data-status">Checking local storage…</div>
+        <div v-else-if="storageMode === 'error'" class="storage-error" role="alert">{{ storageError }}</div>
+        <form v-else @submit.prevent="unlockLocalDatabase">
+          <label class="terrain-field">
+            {{ storageMode === 'setup' ? 'Create a passphrase' : 'Passphrase' }}
+            <input
+              v-model="storagePassphrase"
+              type="password"
+              minlength="12"
+              :autocomplete="storageMode === 'setup' ? 'new-password' : 'current-password'"
+              required
+              placeholder="At least 12 characters"
+            />
+          </label>
+          <label v-if="storageMode === 'setup'" class="terrain-field">
+            Confirm passphrase
+            <input
+              v-model="storagePassphraseConfirmation"
+              type="password"
+              minlength="12"
+              autocomplete="new-password"
+              required
+            />
+          </label>
+          <label v-if="storageMode === 'setup'" class="terrain-field">
+            Optional one-time legacy H2 export
+            <input type="file" accept=".json,application/json" @change="chooseLegacyExport" />
+          </label>
+          <p v-if="storageMode === 'setup'" class="help-copy">Importing an H2 export encrypts it in this browser. Delete the plaintext export after import. If you skip it, the built-in campaign data is installed.</p>
+          <button class="place-button storage-submit" type="submit">
+            {{ storageMode === 'setup' ? 'Create encrypted database' : 'Unlock database' }}
+          </button>
+        </form>
+        <div v-if="storageMode === 'setup'" class="backup-restore">
+          <label class="terrain-field">
+            Restore an encrypted backup
+            <input type="file" accept=".json,application/json" @change="chooseBackupImport" />
+          </label>
+          <button class="place-button" type="button" :disabled="!backupImportFile" @click="restoreEncryptedBackup">
+            Load backup, then unlock
+          </button>
+        </div>
+        <p v-if="storageError" class="storage-error" role="alert">{{ storageError }}</p>
+        <p class="help-copy">There is no password reset or server-side copy. Losing the passphrase means losing access to this database. Export encrypted backups regularly. Web Crypto requires HTTPS or localhost.</p>
       </div>
-    </header>
+    </section>
+    <template v-else>
+      <header class="topbar">
+        <a class="brand" href="#" aria-label="Wargames home">
+          <span class="brand-mark">B</span>
+          <span class="brand-copy"><strong>Wargames</strong><small>FIELD MAP · ALMA 52</small></span>
+        </a>
+        <div class="topbar-right">
+          <span class="status-dot"></span><span class="status-text">LOCAL · ENCRYPTED</span>
+          <button class="topbar-action" @click="downloadEncryptedBackup">Export backup</button>
+          <button class="topbar-action" @click="lockLocalDatabase">Lock</button>
+        </div>
+      </header>
 
-    <section class="map-layout">
+      <section class="map-layout">
       <aside class="sidebar">
-        <div v-if="apiError" class="api-error" role="alert">
-          {{ apiError }}
+        <div v-if="databaseNotice" class="local-data-status" role="status">{{ databaseNotice }}</div>
+        <div v-if="dataError" class="local-data-error" role="alert">
+          {{ dataError }}
           <button @click="retryData">Retry</button>
         </div>
-        <div v-else-if="isLoading" class="api-status">Loading campaign data…</div>
+        <div v-else-if="isLoading" class="local-data-status">Loading campaign data…</div>
         <div class="section-eyebrow">THEATER OF OPERATIONS</div>
         <h1>{{ campaign?.name || (mapMode === 'middle-earth' ? 'Middle-earth' : 'Land of Zarahemla') }}</h1>
         <p class="intro">{{ campaign?.description || 'A strategic campaign map.' }}</p>
@@ -774,6 +1376,7 @@ onBeforeUnmount(() => {
           <select
             :value="mapMode === 'middle-earth' ? 'middle-earth' : 'tiles'"
             aria-label="Choose map world"
+            :disabled="!!multiplayerRole"
             @change="selectMapMode($event.target.value)"
           >
             <option value="tiles">CES Lands</option>
@@ -788,6 +1391,7 @@ onBeforeUnmount(() => {
             <select
               :value="selectedCampaignSlug"
               aria-label="Choose Book of Mormon campaign"
+              :disabled="!!multiplayerRole"
               @change="selectCampaign($event.target.value)"
             >
               <option
@@ -817,12 +1421,12 @@ onBeforeUnmount(() => {
         </div>
         <label class="terrain-field">
           Region name
-          <input v-model="terrainName" maxlength="100" placeholder="Optional, e.g. Northern Forest" />
+          <input v-model="terrainName" maxlength="100" :disabled="!!multiplayerRole" placeholder="Optional, e.g. Northern Forest" />
         </label>
         <label class="terrain-field">
           Terrain type
           <div class="select-wrap">
-            <select v-model="terrainType" aria-label="Terrain type">
+            <select v-model="terrainType" aria-label="Terrain type" :disabled="!!multiplayerRole">
               <option v-for="type in TERRAIN_TYPES" :key="type.value" :value="type.value">{{ type.label }}</option>
             </select>
             <span aria-hidden="true">⌄</span>
@@ -830,19 +1434,19 @@ onBeforeUnmount(() => {
         </label>
         <label class="terrain-field">
           <span class="terrain-field-heading">Brush size <strong>{{ terrainBrushSize }}%</strong></span>
-          <input v-model.number="terrainBrushSize" type="range" min="0.5" max="15" step="0.5" aria-label="Brush size" />
+          <input v-model.number="terrainBrushSize" type="range" min="0.5" max="15" step="0.5" aria-label="Brush size" :disabled="!!multiplayerRole" />
         </label>
         <button
           class="place-button"
           :class="{ active: paintingTerrain }"
-          :disabled="!campaign || isLoading"
+          :disabled="!campaign || isLoading || !!multiplayerRole"
           @click="toggleTerrainPainting"
         >{{ paintingTerrain ? 'Finish painting' : 'Paint terrain' }}</button>
         <p v-if="paintingTerrain" class="help-copy">Drag across the map to paint {{ terrainLabel(terrainType).toLowerCase() }}. Press Escape to stop.</p>
         <button
           class="place-button terrain-erase-button"
           :class="{ active: erasingTerrain }"
-          :disabled="!campaign || isLoading"
+          :disabled="!campaign || isLoading || !!multiplayerRole"
           @click="toggleTerrainErasing"
         >{{ erasingTerrain ? 'Stop erasing' : 'Erase painted terrain' }}</button>
         <p v-if="erasingTerrain" class="help-copy">Click a painted stroke on the map to remove it. Press Escape to stop.</p>
@@ -857,6 +1461,7 @@ onBeforeUnmount(() => {
               type="button"
               :aria-label="`Delete ${region.name}`"
               title="Delete terrain region"
+              :disabled="!!multiplayerRole"
               @click="removeTerrainRegion(region)"
             >×</button>
           </div>
@@ -895,12 +1500,85 @@ onBeforeUnmount(() => {
           <span class="plus">＋</span>{{ placing ? 'Click map to place' : 'Place army' }}
         </button>
         <div v-if="selectedArmy !== null" class="selected-hint">Army selected <button @click="removeSelectedArmy">Remove</button></div>
-        <p class="help-copy">Drag armies to move them. Select a piece and press <kbd>⌫</kbd> to remove.</p>
+        <p class="help-copy">
+          {{ multiplayerRole === 'guest'
+            ? 'Propose army placements, moves, and removals to the host for approval.'
+            : 'Drag armies to move them. Select a piece and press Delete/Backspace to remove.' }}
+        </p>
+
+        <div class="divider"></div>
+        <div class="section-row">
+          <span class="field-label">MULTIPLAYER</span>
+          <span class="multiplayer-status">{{ multiplayerStatus }}</span>
+        </div>
+        <p class="help-copy">The host is authoritative. Metered handles signaling; gameplay travels over encrypted WebRTC data channels, using TURN only when a direct connection cannot be made.</p>
+        <label class="terrain-field">
+          Player name
+          <input v-model="multiplayerName" maxlength="80" :disabled="!!multiplayerRole" placeholder="Your name" />
+        </label>
+        <div v-if="!multiplayerRole" class="multiplayer-controls">
+          <label class="terrain-field">
+            Metered publishable key
+            <input
+              v-model="meteredPublishableKey"
+              type="password"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="pk_live_…"
+            />
+          </label>
+          <p class="help-copy">Create a publishable key in Metered Realtime → API Keys. Enable Send, Publish, Subscribe, and Presence, and restrict its channel pattern to <code>bom-wargames-*</code>. The Realtime SDK handles TURN configuration. You can prefill this field with <code>VITE_METERED_PUBLISHABLE_KEY</code> in a local <code>.env.local</code> file. This key is browser-visible and is not included in invitations.</p>
+          <button class="place-button" :disabled="!campaign || isLoading || !meteredPublishableKey.trim()" @click="startMultiplayerHost">
+            Host game
+          </button>
+          <label class="terrain-field">
+            Invitation JSON
+            <textarea v-model="joinCode" rows="4" placeholder="Paste an invitation from the host"></textarea>
+          </label>
+          <button class="place-button" :disabled="!joinCode.trim() || !multiplayerName.trim() || !meteredPublishableKey.trim()" @click="joinMultiplayerGame">
+            Join game
+          </button>
+        </div>
+        <div v-else class="multiplayer-controls">
+          <p class="multiplayer-role">{{ multiplayerRole === 'host' ? 'You are hosting this game.' : 'You are connected as a player.' }}</p>
+          <div v-if="multiplayerRole === 'host'">
+            <label class="terrain-field">
+              Share this invitation with players
+              <textarea :value="invitationCode" rows="5" readonly></textarea>
+            </label>
+            <button class="place-button" :disabled="!invitationCode" @click="copyInvitation">Copy invitation</button>
+            <div v-if="pendingJoinRequests.length" class="multiplayer-list">
+              <strong class="multiplayer-list-title">Join requests</strong>
+              <div v-for="request in pendingJoinRequests" :key="request.peerId" class="multiplayer-request">
+                <span>{{ request.playerName }}<small>{{ request.peerId.slice(0, 18) }}…</small></span>
+                <button @click="approveJoinRequest(request)">Approve</button>
+                <button @click="rejectJoinRequest(request)">Reject</button>
+              </div>
+            </div>
+            <div v-if="pendingProposals.length" class="multiplayer-list">
+              <strong class="multiplayer-list-title">Pending actions</strong>
+              <div v-for="proposal in pendingProposals" :key="proposal.proposalId" class="multiplayer-request proposal-request">
+                <span>{{ proposal.action }}<small>{{ proposal.peerId.slice(0, 18) }}…</small></span>
+                <button @click="resolveGameProposal(proposal, true)">Approve</button>
+                <button @click="resolveGameProposal(proposal, false)">Reject</button>
+              </div>
+            </div>
+            <label class="terrain-field">
+              Host-editable ruleset (JSON)
+              <textarea v-model="rulesetDraft" rows="8" spellcheck="false"></textarea>
+            </label>
+            <button class="place-button" @click="publishRuleset">Apply ruleset</button>
+          </div>
+          <pre v-else class="ruleset-view">{{ JSON.stringify(gameRuleset, null, 2) }}</pre>
+          <p v-if="multiplayerNotice" class="multiplayer-notice" role="status">{{ multiplayerNotice }}</p>
+          <button class="place-button disconnect-button" @click="stopMultiplayerGame">Leave game</button>
+        </div>
+        <div v-if="multiplayerError" class="multiplayer-error" role="alert">{{ multiplayerError }}</div>
 
         <div class="sidebar-bottom">
           <div class="legend-line"><span class="legend-swatch blue"></span><span>{{ mapMode === 'middle-earth' ? 'Free Peoples forces' : 'Nephite forces' }}</span><b>{{ blueArmies.length }}</b></div>
           <div class="legend-line"><span class="legend-swatch red"></span><span>{{ mapMode === 'middle-earth' ? 'Sauron’s forces' : 'Lamanite forces' }}</span><b>{{ redArmies.length }}</b></div>
-          <button class="layers-button" @click="toggleMapMode">
+          <button class="layers-button" :disabled="!!multiplayerRole" @click="toggleMapMode">
             <span>◈</span>{{ mapMode === 'middle-earth' ? 'Return to CES map' : mapMode === 'artwork' ? 'Show assembled CES tiles' : 'Show illustrated map' }}<span class="chevron">›</span>
           </button>
         </div>
@@ -1033,6 +1711,7 @@ onBeforeUnmount(() => {
         <div class="map-caption"><span class="caption-dot"></span>{{ mapMode === 'middle-earth' ? 'MIDDLE-EARTH' : mapMode === 'artwork' ? 'ZARAHEMLA THEATER' : 'CES TILE MOSAIC' }}<span class="caption-divider">/</span>{{ mapMode === 'artwork' ? 'MAP 01' : mapMode === 'middle-earth' ? 'WESTERN LANDS' : 'ZOOM 8+' }}</div>
         <div class="coordinates">{{ zoomLabel }} <span>·</span> {{ armies.length }} UNITS</div>
       </section>
-    </section>
+      </section>
+    </template>
   </main>
 </template>
