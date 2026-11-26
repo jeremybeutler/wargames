@@ -3,7 +3,7 @@
 # instances lose local files whenever they restart or go to sleep.
 services:
   - type: web
-    name: bom-wargames
+    name: wargames
     runtime: docker
     plan: free
     dockerfilePath: ./Dockerfile

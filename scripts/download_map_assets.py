@@ -15,7 +15,7 @@ from urllib.robotparser import RobotFileParser
 
 ASSET_HOST = "media.bookofmormon.online"
 ASSET_ROOT = f"https://{ASSET_HOST}/map/ces"
-USER_AGENT = "BOM-Wargames-CES-tile-downloader/1.2"
+USER_AGENT = "Wargames-CES-tile-downloader/1.2"
 REQUEST_DELAY_SECONDS = 0.5
 MAX_FILE_BYTES = 30 * 1024 * 1024
 MAX_TOTAL_BYTES = 200 * 1024 * 1024

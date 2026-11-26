@@ -16,7 +16,7 @@ COPY backend/pom.xml ./
 RUN mvn -q -B dependency:go-offline
 COPY backend/src ./src
 COPY --from=frontend /app/frontend/dist /app/frontend/dist
-RUN mvn -q -B -DskipTests package && cp target/bom-wargames-api-*.jar /app/app.jar
+RUN mvn -q -B -DskipTests package && cp target/wargames-api-*.jar /app/app.jar
 
 # 3. Runtime
 FROM eclipse-temurin:17-jre-alpine

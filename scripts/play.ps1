@@ -40,7 +40,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $frontend = Join-Path $root 'frontend'
 $backend = Join-Path $root 'backend'
-$jar = Join-Path $backend 'target\bom-wargames-api-0.1.0.jar'
+$jar = Join-Path $backend 'target\wargames-api-0.1.0.jar'
 
 function Test-Command($name) { [bool](Get-Command $name -ErrorAction SilentlyContinue) }
 

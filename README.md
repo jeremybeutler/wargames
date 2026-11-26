@@ -1,4 +1,4 @@
-# BOM Wargames Map
+# Wargames Map
 
 A first playable map prototype using Vue 3 and a Java Spring Boot API.
 
@@ -89,7 +89,7 @@ files on restart). `Dockerfile` builds the whole game into one image and
    - `DATABASE_PASSWORD` = `<password>`
 4. Wait for the first build (several minutes), then open the
    `https://….onrender.com` link. The address comes from `name` in
-   `render.yaml` (`bom-wargames` → `bom-wargames.onrender.com`, plus a few
+   `render.yaml` (`wargames` → `wargames.onrender.com`, plus a few
    random characters if that name is taken), so change it before the first
    deploy. You can also add your own domain under **Settings → Custom Domains**.
 
