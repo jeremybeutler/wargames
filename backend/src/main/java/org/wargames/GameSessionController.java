@@ -11,6 +11,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Locale;
 import java.util.function.BooleanSupplier;
 import java.util.function.IntSupplier;
@@ -48,13 +49,29 @@ public class GameSessionController {
         new Party("saruman", "Saruman", "Sauron's Forces", "Uruk-hai", 2, "Isengard", false, 12),
         new Party("sauron", "Sauron", "Sauron's Forces", "Orcs", 3, "Barad-dûr", false, 12)
     );
+    /** The optional 8-player expansion: one more party, and its home stronghold, per side. */
+    private static final List<Party> EXPANSION_ROSTER = List.of(
+        new Party("elves", "Galadriel", "Free Peoples", "Elves", 2, "Lothlórien", false, 12),
+        new Party("witchking", "Witch-king", "Sauron's Forces", "Ringwraiths", 2, "Minas Morgul", false, 12)
+    );
     private static final List<Objective> OBJECTIVES = List.of(
-        new Objective("shire", "The Shire", "Hobbiton", "Free Peoples"),
-        new Objective("rohan", "Rohan", "Edoras", "Free Peoples"),
-        new Objective("gondor", "Gondor", "Minas Tirith", "Free Peoples"),
-        new Objective("rhun", "Rhûn", "Rhûn", "Sauron's Forces"),
-        new Objective("mordor", "Mordor", "Barad-dûr", "Sauron's Forces"),
-        new Objective("isengard", "Isengard", "Isengard", "Sauron's Forces")
+        new Objective("shire", "The Shire", "Hobbiton", "Free Peoples", 1),
+        new Objective("rohan", "Rohan", "Edoras", "Free Peoples", 2),
+        new Objective("gondor", "Gondor", "Minas Tirith", "Free Peoples", 3),
+        new Objective("rhun", "Rhûn", "Rhûn", "Sauron's Forces", 1),
+        new Objective("mordor", "Mordor", "Barad-dûr", "Sauron's Forces", 3),
+        new Objective("isengard", "Isengard", "Isengard", "Sauron's Forces", 2)
+    );
+    private static final List<Objective> EXPANSION_OBJECTIVES = List.of(
+        new Objective("lorien", "Lothlórien", "Lothlórien", "Free Peoples", 2),
+        new Objective("morgul", "Minas Morgul", "Minas Morgul", "Sauron's Forces", 2)
+    );
+    /** Leaders a player may choose to represent their party; the first is the default. */
+    private static final Map<String, List<String>> REPRESENTATIVES = Map.of(
+        "frodo", List.of("Frodo", "Sam", "Merry", "Pippin"),
+        "theoden", List.of("Théoden", "Éowyn", "Éomer"),
+        "aragorn", List.of("Aragorn", "Gandalf", "Gimli"),
+        "elves", List.of("Galadriel", "Legolas", "Arwen")
     );
     private final GameSessionRepository games;
     private final CampaignRepository campaigns;
@@ -78,6 +95,8 @@ public class GameSessionController {
                                HttpServletResponse response) {
         String playerName = cleanName(request.playerName());
         double mapWidthMiles = request.mapWidthMiles() == null ? 1000 : request.mapWidthMiles();
+        int players = request.players() == null ? 6 : request.players();
+        if (players != 6 && players != 8) throw badRequest("Choose 6 or 8 players.");
         if (mapWidthMiles < 300 || mapWidthMiles > 3000) {
             throw badRequest("Map width must be between 300 and 3,000 miles.");
         }
@@ -99,19 +118,19 @@ public class GameSessionController {
         room.mapWidthMiles = mapWidthMiles;
         room.ringHolder = "frodo";
         room.createdAt = Instant.now().toString();
-        for (Party template : ROSTER) {
+        for (Party template : roster(players)) {
             Place place = findPlace(mapPlaces, template.startingPlace);
             Party party = template.copyAt(place.getX(), place.getY());
             room.parties.add(party);
         }
-        for (Objective template : OBJECTIVES) {
+        for (Objective template : objectives(players)) {
             Place place = findPlace(mapPlaces, template.placeName);
             room.objectives.add(template.copyAt(place.getX(), place.getY()));
         }
         Place mountDoom = findPlace(mapPlaces, "Mount Doom");
         room.mountDoomX = mountDoom.getX();
         room.mountDoomY = mountDoom.getY();
-        room.events.add("The lobby is open. Six parties await their commanders.");
+        room.events.add("The lobby is open. " + players + " parties await their commanders.");
         save(room);
         SeatSessions.issue(http, response, room.code, SeatSessions.HOST_SEAT, hostSecret);
         return view(room, SeatSessions.HOST_SEAT);
@@ -165,7 +184,9 @@ public class GameSessionController {
         if (!"lobby".equals(room.status)) throw conflict("This campaign has already started.");
         Party party = party(room, request.characterId());
         if (party.playerTokenHash != null) throw conflict("That character's seat is already taken.");
-        party.playerName = cleanName(request.playerName());
+        String playerName = cleanName(request.playerName());
+        chooseRepresentative(party, request.representative());
+        party.playerName = playerName;
         String secret = SeatSessions.newSecret();
         party.playerTokenHash = SeatSessions.hash(secret);
         room.events.add(party.playerName + " joined as " + party.name + ".");
@@ -182,7 +203,7 @@ public class GameSessionController {
         requireHost(seat);
         if (!"lobby".equals(room.status)) throw conflict("The campaign has already started.");
         if (room.parties.stream().anyMatch(party -> party.playerTokenHash == null)) {
-            throw conflict("All six character seats must be filled before starting.");
+            throw conflict("Every character seat must be filled before starting.");
         }
         room.status = "campaign";
         room.round = 1;
@@ -193,7 +214,8 @@ public class GameSessionController {
         room.turnIndex = 0;
         room.events.add("Turn order: " + String.join(", ", room.turnOrderIds.stream()
             .map(id -> party(room, id).name).toList()) + ".");
-        room.events.add("Campaign begins — all six parties and armies are at their starting locations.");
+        room.events.add("Campaign begins — all " + room.parties.size()
+            + " parties and armies are at their starting locations.");
         save(room);
         return view(room, seat);
     }
@@ -207,8 +229,9 @@ public class GameSessionController {
         String seat = authenticate(room, http);
         Party mover = activeParty(room, seat, request.characterId());
         validateDestination(request.x(), request.y());
-        MovementPathCalculator.Result result = calculateMove(room, mover, request.x(), request.y());
-        return new MovementPreviewView(result.miles(), result.movementPoints(),
+        double[] target = snapToMountDoom(room, request.x(), request.y());
+        MovementPathCalculator.Result result = calculateMove(room, mover, target[0], target[1]);
+        return new MovementPreviewView(target[0], target[1], result.miles(), result.movementPoints(),
             mover.movementRemaining - result.movementPoints(), result.riverCrossings(),
             result.destinationTerrain(), result.segments().stream()
                 .map(segment -> new MovementSegmentView(segment.terrain(), segment.miles(),
@@ -225,14 +248,15 @@ public class GameSessionController {
         if (mover.moved) throw conflict("This party has already moved this turn.");
         if (mover.attacked) throw conflict("A party cannot move after attacking.");
         validateDestination(request.x(), request.y());
-        MovementPathCalculator.Result movement = calculateMove(room, mover, request.x(), request.y());
+        double[] target = snapToMountDoom(room, request.x(), request.y());
+        MovementPathCalculator.Result movement = calculateMove(room, mover, target[0], target[1]);
         if (movement.movementPoints() > mover.movementRemaining + 0.0001) {
             throw conflict(String.format(Locale.ROOT,
                 "That move costs %.1f movement points; only %.1f remain.",
                 movement.movementPoints(), mover.movementRemaining));
         }
-        mover.x = request.x();
-        mover.y = request.y();
+        mover.x = target[0];
+        mover.y = target[1];
         mover.moved = true;
         mover.movementRemaining = Math.max(0, mover.movementRemaining - movement.movementPoints());
         mover.terrain = movement.destinationTerrain();
@@ -275,21 +299,9 @@ public class GameSessionController {
             if (!defender.id.equals(request.targetId())) {
                 throw conflict("Defeat the defending party before attacking a stronghold.");
             }
-            int roll = rollAttack() + attacker.attackBoost;
-            int armor = partyArmor(defender);
-            boolean hit = roll > armor;
             attacker.attacked = true;
-            attacker.hidden = false;
-            attacker.visibleUntilRound = room.round;
-            defender.hidden = false;
-            defender.visibleUntilRound = room.round;
-            if (hit) applyHit(room, defender);
-            room.events.add(hit
-                ? String.format(Locale.ROOT, "%s hit %s (%d vs. %d).", attacker.name, defender.name, roll, armor)
-                : String.format(Locale.ROOT, "%s attacked %s but missed (%d vs. %d).",
-                    attacker.name, defender.name, roll, armor));
-            checkVictory(room);
-            if (room.winner == null) advanceIfNoActions(room);
+            fight(room, attacker, defender, GameSessionController::rollDie);
+            finishAction(room);
             save(room);
             return view(room, seat);
         }
@@ -301,21 +313,76 @@ public class GameSessionController {
             throw conflict("Attack requires direct contact with an enemy party or stronghold.");
         }
         if (objective.owner.equals(attacker.team)) throw conflict("Your team already controls this stronghold.");
-        int roll = rollAttack() + attacker.attackBoost;
-        boolean hit = roll > objective.armorClass;
         attacker.attacked = true;
-        attacker.hidden = false;
-        attacker.visibleUntilRound = room.round;
-        if (hit) objective.owner = attacker.team;
-        room.events.add(hit
-            ? String.format(Locale.ROOT, "%s captured %s (%d vs. %d).",
-                attacker.name, objective.name, roll, objective.armorClass)
-            : String.format(Locale.ROOT, "%s attacked %s but missed (%d vs. %d).",
-                attacker.name, objective.name, roll, objective.armorClass));
-        checkVictory(room);
-        if (room.winner == null) advanceIfNoActions(room);
+        siege(room, attacker, objective, GameSessionController::rollDie);
+        finishAction(room);
         save(room);
         return view(room, seat);
+    }
+
+    /** One battle between two parties: one die per unit, the higher total wins, the loser loses one unit. */
+    static Battle.Result fight(Room room, Party attacker, Party defender, IntSupplier d6) {
+        Battle.Result result = Battle.roll(Battle.dice(attacker), attacker.attackBoost,
+            Battle.dice(defender), defenseModifier(defender), d6);
+        reveal(room, attacker);
+        reveal(room, defender);
+        Party loser = result.attackerWon() ? defender : attacker;
+        room.events.add(String.format(Locale.ROOT, "%s attacked %s: %s vs. %s. %s",
+            attacker.name, defender.name, dice(result.attackerDice(), result.attackerTotal()),
+            dice(result.defenderDice(), result.defenderTotal()),
+            loser.units > 0 ? loser.name + " lost 1 unit." : loser.name + " was defeated."));
+        applyLoss(room, loser);
+        room.lastBattle = BattleLog.of(room, attacker, defender.id, defender.name, defender.units,
+            defender.initialUnits, !defender.alive, result, null);
+        checkVictory(room);
+        return result;
+    }
+
+    /**
+     * Attacking a stronghold works like attacking a party: its garrison rolls one die per unit
+     * (bare walls roll one), the higher total wins and the loser loses one unit. Beating a
+     * stronghold with no garrison left captures it.
+     */
+    static Battle.Result siege(Room room, Party attacker, Objective objective, IntSupplier d6) {
+        Battle.Result result = Battle.roll(Battle.dice(attacker), attacker.attackBoost,
+            Battle.dice(objective), 0, d6);
+        boolean captured = result.attackerWon() && objective.units == 0;
+        reveal(room, attacker);
+        String outcome;
+        if (!result.attackerWon()) {
+            outcome = objective.name + " held; " + (attacker.units > 0
+                ? attacker.name + " lost 1 unit." : attacker.name + " was defeated.");
+            applyLoss(room, attacker);
+        } else if (captured) {
+            outcome = attacker.name + " captured " + objective.name + ".";
+            objective.owner = attacker.team;
+        } else {
+            objective.units -= 1;
+            outcome = objective.name + "'s garrison lost 1 unit.";
+        }
+        room.events.add(String.format(Locale.ROOT, "%s attacked %s: %s vs. %s. %s",
+            attacker.name, objective.name, dice(result.attackerDice(), result.attackerTotal()),
+            dice(result.defenderDice(), result.defenderTotal()), outcome));
+        room.lastBattle = BattleLog.of(room, attacker, objective.id, objective.name, objective.units,
+            objective.initialUnits, false, result, captured);
+        checkVictory(room);
+        return result;
+    }
+
+    /** After an attack: keep the turn valid if the attacker fell, else end it when nothing is left to do. */
+    static void finishAction(Room room) {
+        if (room.winner != null) return;
+        if (room.turnIndex >= turnOrder(room).size()) {
+            room.turnIndex = turnOrder(room).size() - 1;
+            advanceTurn(room);
+            return;
+        }
+        advanceIfNoActions(room);
+    }
+
+    private static String dice(List<Integer> dice, int total) {
+        return dice.stream().map(String::valueOf).collect(java.util.stream.Collectors.joining("-"))
+            + (dice.size() > 1 ? " (" + total + ")" : "");
     }
 
     @PostMapping("/{code}/end-turn")
@@ -340,43 +407,34 @@ public class GameSessionController {
         if (!"frodo".equals(frodo.id) || !"frodo".equals(room.ringHolder)) {
             throw conflict("Only the Ring-bearer can destroy the Ring.");
         }
-        if (!sameLocation(frodo.x, frodo.y, room.mountDoomX, room.mountDoomY)) {
+        if (!atMountDoom(room, frodo)) {
             throw conflict("The Ring can only be destroyed at Mount Doom.");
         }
-        resolveRingDestruction(room, frodo, GameSessionController::rollAttack);
+        resolveRingDestruction(room, frodo, GameSessionController::rollDie);
         save(room);
         return view(room, seat);
     }
 
     /**
-     * Every living opposing party at Mount Doom makes one normal attack on Frodo, in turn
-     * order, before the Ring can be destroyed. The first hit captures the Ring.
+     * Every living opposing party at Mount Doom fights Frodo once, in turn order, before the
+     * Ring can be destroyed. If Frodo falls the Ring is captured; if he survives them all, the
+     * Ring is destroyed.
      */
-    static void resolveRingDestruction(Room room, Party frodo, IntSupplier dice) {
+    static void resolveRingDestruction(Room room, Party frodo, IntSupplier d6) {
         List<Party> interceptors = turnOrder(room).stream()
-            .filter(party -> party.alive && !party.team.equals(frodo.team)
-                && sameLocation(frodo.x, frodo.y, party.x, party.y))
+            .filter(party -> party.alive && !party.team.equals(frodo.team) && atMountDoom(room, party))
             .toList();
         if (!interceptors.isEmpty()) {
             reveal(room, frodo);
             interceptors.forEach(party -> reveal(room, party));
             room.events.add(String.join(", ", interceptors.stream().map(party -> party.name).toList())
                 + (interceptors.size() == 1 ? " intercepts" : " intercept")
-                + " Frodo at Mount Doom.");
+                + " " + frodo.name + " at Mount Doom.");
         }
         for (Party attacker : interceptors) {
-            int roll = dice.getAsInt() + attacker.attackBoost;
-            int armor = partyArmor(frodo);
-            if (roll > armor) {
-                applyHit(room, frodo);
-                room.events.add(String.format(Locale.ROOT,
-                    "%s hit Frodo at Mount Doom and captured the Ring (%d vs. %d).",
-                    attacker.name, roll, armor));
-                checkVictory(room);
-                return;
-            }
-            room.events.add(String.format(Locale.ROOT,
-                "%s attacked Frodo at Mount Doom but missed (%d vs. %d).", attacker.name, roll, armor));
+            if (!attacker.alive) continue;
+            fight(room, attacker, frodo, d6);
+            if (!"frodo".equals(room.ringHolder)) return;
         }
         room.ringHolder = "destroyed";
         room.winner = "Free Peoples";
@@ -388,22 +446,50 @@ public class GameSessionController {
         party.visibleUntilRound = room.round;
     }
 
-    private static int partyArmor(Party defender) {
-        return defender.armorClass
-            + ("volcanic".equals(defender.terrain) || "mount-doom".equals(defender.terrain) ? -1 : 0);
+    /** Defending on volcanic ground (Mordor, Mount Doom) costs one pip on every defense die. */
+    private static int defenseModifier(Party defender) {
+        return "volcanic".equals(defender.terrain) || "mount-doom".equals(defender.terrain) ? -1 : 0;
     }
 
-    /** One successful hit: remove an army unit, or defeat the character once its army is gone. */
-    private static void applyHit(Room room, Party defender) {
-        int defenderIndex = turnOrder(room).indexOf(defender);
-        if (defender.units > 0) defender.units -= 1;
-        else defender.alive = false;
-        if (!defender.alive && defenderIndex >= 0 && defenderIndex < room.turnIndex) {
-            room.turnIndex -= 1;
+    /**
+     * One lost battle: remove an army unit, or defeat the character once its army is gone.
+     * Frodo falling hands the Ring to Sauron.
+     */
+    static void applyLoss(Room room, Party party) {
+        if (!party.alive) return;
+        if (party.units > 0) {
+            party.units -= 1;
+            return;
         }
-        if ("frodo".equals(defender.id) && "frodo".equals(room.ringHolder)) {
+        int index = turnOrder(room).indexOf(party);
+        party.alive = false;
+        if (index >= 0 && index < room.turnIndex) room.turnIndex -= 1;
+        room.events.add(party.name + " has fallen.");
+        if ("frodo".equals(party.id) && "frodo".equals(room.ringHolder)) {
             room.ringHolder = "sauron";
+            room.events.add("Sauron's Forces seized the Ring.");
         }
+    }
+
+    /**
+     * Mount Doom is a small area, not a single point: anywhere within this distance counts.
+     * Measured in % of map width (2.5 = 25 miles on a 1,000-mile map), in both directions.
+     */
+    static final double MOUNT_DOOM_REACH = 2.5;
+
+    /** Distance in % of map width; y is % of height, and the map is half as tall as wide. */
+    private static double mapDistance(double x1, double y1, double x2, double y2) {
+        return Math.hypot(x1 - x2, (y1 - y2) * 0.5);
+    }
+
+    static boolean atMountDoom(Room room, Party party) {
+        return mapDistance(party.x, party.y, room.mountDoomX, room.mountDoomY) <= MOUNT_DOOM_REACH;
+    }
+
+    /** Destinations on Mount Doom's slopes land on the summit itself, so parties meet there. */
+    static double[] snapToMountDoom(Room room, double x, double y) {
+        return mapDistance(x, y, room.mountDoomX, room.mountDoomY) <= MOUNT_DOOM_REACH
+            ? new double[] {room.mountDoomX, room.mountDoomY} : new double[] {x, y};
     }
 
     private MovementPathCalculator.Result calculateMove(Room room, Party mover, double x, double y) {
@@ -440,7 +526,7 @@ public class GameSessionController {
         boolean canMove = !active.moved && !active.attacked && active.movementRemaining > 0.0001;
         boolean canAttack = !active.attacked && hasAttackTarget(room, active);
         boolean canDestroyRing = "frodo".equals(active.id) && "frodo".equals(room.ringHolder)
-            && sameLocation(active.x, active.y, room.mountDoomX, room.mountDoomY);
+            && atMountDoom(room, active);
         if (!canMove && !canAttack && !canDestroyRing) advanceTurn(room);
     }
 
@@ -559,18 +645,21 @@ public class GameSessionController {
             }).toList();
         List<SeatView> seatViews = room.parties.stream()
             .map(party -> new SeatView(party.id, party.name, party.team, party.army,
-                party.initialUnits, party.playerName, party.playerTokenHash != null))
+                party.initialUnits, party.playerName, party.playerTokenHash != null,
+                representatives(party)))
             .toList();
         Party active = "campaign".equals(room.status) ? currentTurnParty(room) : null;
         String activeCharacter = active == null ? null : active.id;
         String team = active == null ? null : active.team;
         List<ObjectiveView> objectiveViews = room.objectives.stream()
-            .map(city -> new ObjectiveView(city.id, city.name, city.x, city.y, city.owner, city.armorClass))
+            .map(city -> new ObjectiveView(city.id, city.name, city.x, city.y, city.owner, city.armorClass,
+                city.units, city.initialUnits))
             .toList();
         return new GameView(room.code, room.status, room.mapWidthMiles, room.round, team,
             activeCharacter, room.ringHolder, room.winner, partyViews, objectiveViews,
             List.copyOf(room.events), seatViews, host, ownParty == null ? null : ownParty.id,
-            room.hostName, room.createdAt, room.mountDoomX, room.mountDoomY);
+            room.hostName, room.createdAt, room.mountDoomX, room.mountDoomY, MOUNT_DOOM_REACH,
+            room.lastBattle);
     }
 
     /**
@@ -581,8 +670,9 @@ public class GameSessionController {
         String seat = SeatSessions.requestedSeat(http);
         if (seat == null) return null;
         String expectedHash = SeatSessions.HOST_SEAT.equals(seat) ? room.hostTokenHash
+            // An unclaimed seat has no hash; findFirst() on a mapped null would throw.
             : room.parties.stream().filter(party -> party.id.equals(seat))
-                .map(party -> party.playerTokenHash).findFirst().orElse(null);
+                .findFirst().map(party -> party.playerTokenHash).orElse(null);
         if (!SeatSessions.matches(SeatSessions.cookieSecret(http, seat), expectedHash)) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN,
                 "This device does not hold that seat. Rejoin from the device you joined with.");
@@ -594,6 +684,33 @@ public class GameSessionController {
         if (!SeatSessions.HOST_SEAT.equals(seat)) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Only the host can start the campaign.");
         }
+    }
+
+    static List<Party> roster(int players) {
+        List<Party> roster = new ArrayList<>(ROSTER);
+        if (players == 8) roster.addAll(EXPANSION_ROSTER);
+        return roster;
+    }
+
+    static List<Objective> objectives(int players) {
+        List<Objective> objectives = new ArrayList<>(OBJECTIVES);
+        if (players == 8) objectives.addAll(EXPANSION_OBJECTIVES);
+        return objectives;
+    }
+
+    /** The leaders this party may be represented by; parties without alternatives keep their own. */
+    static List<String> representatives(Party party) {
+        return REPRESENTATIVES.getOrDefault(party.id, List.of(party.name));
+    }
+
+    /** Renames the party to its chosen representative; null keeps the current one. */
+    static void chooseRepresentative(Party party, String representative) {
+        if (representative == null || representative.isBlank()) return;
+        String choice = representative.trim();
+        if (!representatives(party).contains(choice)) {
+            throw badRequest(choice + " cannot represent the " + party.army + ".");
+        }
+        party.name = choice;
     }
 
     static List<Party> turnOrder(Room room) {
@@ -628,8 +745,8 @@ public class GameSessionController {
         }
     }
 
-    private static int rollAttack() {
-        return RANDOM.nextInt(6) + RANDOM.nextInt(6) + RANDOM.nextInt(6) + 3;
+    private static int rollDie() {
+        return RANDOM.nextInt(6) + 1;
     }
 
     private static boolean sameLocation(double x1, double y1, double x2, double y2) {
@@ -674,30 +791,31 @@ public class GameSessionController {
         return new ResponseStatusException(HttpStatus.CONFLICT, message);
     }
 
-    private record CreateGameRequest(String playerName, Double mapWidthMiles) {}
-    private record JoinGameRequest(String playerName, String characterId) {}
+    private record CreateGameRequest(String playerName, Double mapWidthMiles, Integer players) {}
+    private record JoinGameRequest(String playerName, String characterId, String representative) {}
     private record CharacterRequest(String characterId) {}
     private record MoveRequest(String characterId, double x, double y) {}
-    private record MovementPreviewView(double miles, double movementPoints, double remaining,
+    private record MovementPreviewView(double x, double y, double miles, double movementPoints, double remaining,
                                        int riverCrossings, String destinationTerrain,
                                        List<MovementSegmentView> segments) {}
     private record MovementSegmentView(String terrain, double miles, double movementPoints) {}
     private record AttackRequest(String characterId, String targetId) {}
     record SeatView(String id, String name, String team, String army, int initialUnits,
-                           String playerName, boolean connected) {}
+                           String playerName, boolean connected, List<String> representatives) {}
     record PartyView(String id, String name, String team, String army, Integer units,
                              int initialUnits, Double x, Double y, Double movementRemaining,
                              double movementMax, int attackBoost, int armorClass, boolean ring,
                              boolean alive, boolean hidden, String playerName,
                              Boolean moved, Boolean attacked, String terrain) {}
     record ObjectiveView(String id, String name, double x, double y, String owner,
-                                 int armorClass) {}
+                                 int armorClass, int units, int initialUnits) {}
     record GameView(String code, String status, double mapWidthMiles, int round,
                             String activeTeam, String activeCharacter, String ringHolder,
                             String winner, List<PartyView> parties, List<ObjectiveView> objectives,
                             List<String> events, List<SeatView> seats, boolean host,
                             String ownCharacterId, String hostName, String createdAt,
-                            double mountDoomX, double mountDoomY) {}
+                            double mountDoomX, double mountDoomY, double mountDoomReach,
+                            BattleLog lastBattle) {}
 
     // ignoreUnknown keeps rooms saved with the retired ringInterceptionDefenderId field loadable.
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -723,6 +841,62 @@ public class GameSessionController {
         public List<Party> parties = new ArrayList<>();
         public List<Objective> objectives = new ArrayList<>();
         public List<String> events = new ArrayList<>();
+        /** The most recent battle's dice, shown to every player. */
+        public BattleLog lastBattle;
+        /** Counts battles so clients can tell a new roll from one they've already shown. */
+        public int battleCount;
+    }
+
+    public static class BattleLog {
+        public int id;
+        public int round;
+        public String attackerId;
+        public String attacker;
+        public int attackerUnits;
+        public int attackerInitialUnits;
+        public boolean attackerFell;
+        public String defenderId;
+        public String defender;
+        public Integer defenderUnits;
+        public Integer defenderInitialUnits;
+        public boolean defenderFell;
+        public List<Integer> attackerDice = new ArrayList<>();
+        public List<Integer> defenderDice = new ArrayList<>();
+        public int attackerLosses;
+        public int defenderLosses;
+        public int attackerTotal;
+        public int defenderTotal;
+        /** For stronghold attacks: whether it was captured; null for battles between parties. */
+        public Boolean captured;
+
+        public BattleLog() {}
+
+        /** Recorded after casualties, so unit counts are the survivors. */
+        static BattleLog of(Room room, Party attacker, String defenderId, String defenderName,
+                            Integer defenderUnits, Integer defenderInitialUnits, boolean defenderFell,
+                            Battle.Result result, Boolean captured) {
+            BattleLog log = new BattleLog();
+            log.id = ++room.battleCount;
+            log.round = room.round;
+            log.attackerId = attacker.id;
+            log.attacker = attacker.name;
+            log.attackerUnits = attacker.units;
+            log.attackerInitialUnits = attacker.initialUnits;
+            log.attackerFell = !attacker.alive;
+            log.defenderId = defenderId;
+            log.defender = defenderName;
+            log.defenderUnits = defenderUnits;
+            log.defenderInitialUnits = defenderInitialUnits;
+            log.defenderFell = defenderFell;
+            log.attackerDice = new ArrayList<>(result.attackerDice());
+            log.defenderDice = new ArrayList<>(result.defenderDice());
+            log.attackerLosses = result.attackerLosses();
+            log.defenderLosses = result.defenderLosses();
+            log.attackerTotal = result.attackerTotal();
+            log.defenderTotal = result.defenderTotal();
+            log.captured = captured;
+            return log;
+        }
     }
 
     public static class Party {
@@ -785,18 +959,23 @@ public class GameSessionController {
         public double y;
         public String owner;
         public int armorClass = 12;
+        /** The garrison: one die per unit when attacked, one lost per battle the walls lose. */
+        public int units;
+        public int initialUnits;
 
         public Objective() {}
 
-        Objective(String id, String name, String placeName, String owner) {
+        Objective(String id, String name, String placeName, String owner, int units) {
             this.id = id;
             this.name = name;
             this.placeName = placeName;
             this.owner = owner;
+            this.units = units;
+            this.initialUnits = units;
         }
 
         Objective copyAt(double x, double y) {
-            Objective copy = new Objective(id, name, placeName, owner);
+            Objective copy = new Objective(id, name, placeName, owner, initialUnits);
             copy.x = x;
             copy.y = y;
             return copy;

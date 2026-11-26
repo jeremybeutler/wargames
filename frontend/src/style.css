@@ -118,7 +118,7 @@ body {
   display:grid;
   place-items:center;
   padding:20px;
-  background:linear-gradient(#101b20c9,#101b20e8),url('/map-assets/middle-earth/map.png') center / cover
+  background:linear-gradient(#101b20c9,#101b20e8),url('/map-assets/middle-earth/map.webp') center / cover
 }
 .map-editor-gate-card {
   width:min(100%,440px);

@@ -39,3 +39,6 @@ backend/data/*.log.err
 
 # Terrain backups made by scripts/import-terrain.ps1
 terrain/backups/
+
+# Background music is a personal file (copyrighted); never commit or deploy it
+frontend/public/music/
