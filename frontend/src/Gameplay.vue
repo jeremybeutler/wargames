@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import QRCode from 'qrcode'
 
 const emit = defineEmits(['open-map-editor'])
 const roster = [
@@ -398,10 +399,21 @@ function refreshSavedSessions() {
 
 function setGameAddress(gameCode, seatId) {
   const url = new URL(window.location.href)
-  url.searchParams.delete('view')
+  // Quick test parameters are used once; a reload just reopens the seat.
+  for (const key of ['view', 'quicktest', 'group', 'players', 'start', 'leader']) url.searchParams.delete(key)
   url.searchParams.set('game', gameCode)
   url.searchParams.set('seat', seatId)
   window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
+}
+
+// Quick test games (scripts/test-game.ps1) never appear in the home screen's saved games.
+const QUICK_TEST_GAMES_KEY = 'wargames:quicktest-games'
+function isQuickTestGame(gameCode) {
+  try {
+    return JSON.parse(window.localStorage.getItem(QUICK_TEST_GAMES_KEY) || '[]').includes(gameCode)
+  } catch {
+    return false
+  }
 }
 
 function seatOf(gameView) {
@@ -412,8 +424,10 @@ function seatOf(gameView) {
 function rememberGameSession(gameView, { activate = true } = {}) {
   const seatId = seatOf(gameView)
   if (!seatId) return
-  const seats = readSavedSeats().filter(seat => !(seat.code === gameView.code && seat.seatId === seatId))
-  writeSavedSeats([...seats, { code: gameView.code, seatId }])
+  if (!isQuickTestGame(gameView.code)) {
+    const seats = readSavedSeats().filter(seat => !(seat.code === gameView.code && seat.seatId === seatId))
+    writeSavedSeats([...seats, { code: gameView.code, seatId }])
+  }
   if (!activate) return
   currentSeat.value = seatId
   try {
@@ -1049,6 +1063,7 @@ function playBattle(log) {
   }
   const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
   const step = reduceMotion ? 0 : 420
+  playSound('dice')
   const tumble = window.setInterval(() => {
     const overlay = battleOverlay.value
     if (!overlay || overlay.phase !== 'rolling') return
@@ -1063,6 +1078,7 @@ function playBattle(log) {
     overlay.attackerFaces = [...log.attackerDice]
     overlay.defenderFaces = [...log.defenderDice]
     overlay.phase = 'totals'
+    playSound(log.captured === true ? 'horn' : 'clash')
     battleTimers.push(window.setTimeout(() => {
       if (!battleOverlay.value) return
       battleOverlay.value.phase = 'done'
@@ -1143,51 +1159,336 @@ watch(() => [game.value?.code, game.value?.lastBattle?.id], ([gameCode, battleId
   }
 })
 
-// Background music for the War of the Ring campaign: a local audio file played by a plain
-// <audio> element (no visible player). The file lives in frontend/public/music/, which is
-// kept out of git and deploys, so the button only appears where the file exists.
-const MUSIC_URL = '/music/theme.mp3'
-const musicAvailable = ref(false)
+// Background music: local audio files played by plain Audio objects (no visible player).
+// The lobby and setup screens play the theme; the campaign plays the ambience track. Both
+// live in frontend/public/music/, which is kept out of git and deploys, so the button only
+// appears where a file exists. If one track is missing, the other plays everywhere.
+const MUSIC_TRACKS = { lobby: '/music/theme.mp3', campaign: '/music/ambience.mp3' }
+const availableTracks = ref({})
 const musicOn = ref(false)
-let musicAudio = null
+const musicPlayers = {}
+const musicTrack = computed(() => {
+  const wanted = ['campaign', 'character'].includes(currentView.value) ? 'campaign' : 'lobby'
+  if (availableTracks.value[wanted]) return wanted
+  return Object.keys(MUSIC_TRACKS).find(track => availableTracks.value[track]) || ''
+})
+const musicAvailable = computed(() => Boolean(musicTrack.value))
 
 async function checkMusicAvailable() {
-  try {
-    const response = await fetch(MUSIC_URL, { method: 'HEAD' })
-    // Vite's dev server answers unknown paths with the page itself, so check the type too.
-    musicAvailable.value = response.ok
-      && (response.headers.get('content-type') || '').startsWith('audio/')
-  } catch {
-    musicAvailable.value = false
-  }
+  const found = {}
+  await Promise.all(Object.entries(MUSIC_TRACKS).map(async ([track, url]) => {
+    try {
+      const response = await fetch(url, { method: 'HEAD' })
+      // Vite's dev server answers unknown paths with the page itself, so check the type too.
+      found[track] = response.ok && (response.headers.get('content-type') || '').startsWith('audio/')
+    } catch {
+      found[track] = false
+    }
+  }))
+  availableTracks.value = found
 }
 
-async function toggleMusic() {
-  if (musicOn.value) {
-    musicAudio?.pause()
-    musicOn.value = false
-    return
+function musicPlayer(track) {
+  if (!musicPlayers[track]) {
+    const audio = new Audio(MUSIC_TRACKS[track])
+    audio.loop = true
+    audio.volume = 0.4
+    audio.preload = 'none'
+    musicPlayers[track] = audio
   }
-  if (!musicAudio) {
-    musicAudio = new Audio(MUSIC_URL)
-    musicAudio.loop = true
-    musicAudio.volume = 0.4
-    musicAudio.preload = 'none'
-  }
-  musicOn.value = true
+  return musicPlayers[track]
+}
+
+function pauseAllMusic() {
+  Object.values(musicPlayers).forEach(audio => audio.pause())
+}
+
+// Each track keeps its place, so returning to the lobby resumes the theme where it left off.
+async function playMusicTrack(track) {
+  Object.entries(musicPlayers).forEach(([name, audio]) => { if (name !== track) audio.pause() })
+  if (!track) return
   try {
-    await musicAudio.play()
+    await musicPlayer(track).play()
   } catch {
     musicOn.value = false
     error.value = 'The music could not be played.'
   }
 }
 
+async function toggleMusic() {
+  if (musicOn.value) {
+    pauseAllMusic()
+    musicOn.value = false
+    return
+  }
+  musicOn.value = true
+  await playMusicTrack(musicTrack.value)
+}
+
+watch(musicTrack, track => {
+  if (musicOn.value) void playMusicTrack(track)
+})
+
+// ---------- Quick test games (local development only) ----------
+// scripts/test-game.ps1 opens one tab per seat, all sharing a random group id:
+//   /?quicktest=host&group=G&players=6[&start=1]   creates the game as host
+//   /?quicktest=join&group=G&seat=frodo[&leader=Sam] joins that seat once the host has a code
+// The tabs share this browser's storage, so the host hands the game code to the others there.
+// Every seat has its own cookie, so one browser can hold them all.
+function isLocalDevHost() {
+  const host = window.location.hostname
+  return ['localhost', '127.0.0.1', '[::1]'].includes(host) || host.endsWith('.localhost')
+}
+function waitFor(check, timeoutMs, intervalMs = 300) {
+  return new Promise((resolve, reject) => {
+    const started = Date.now()
+    const tick = async () => {
+      let value = null
+      try { value = await check() } catch { value = null }
+      if (value) return resolve(value)
+      if (Date.now() - started > timeoutMs) return reject(new Error('The quick test game timed out.'))
+      window.setTimeout(tick, intervalMs)
+    }
+    void tick()
+  })
+}
+function keepQuickTestOffHomeScreen(gameCode, seatId) {
+  try {
+    const codes = new Set(JSON.parse(window.localStorage.getItem(QUICK_TEST_GAMES_KEY) || '[]'))
+    codes.add(gameCode)
+    window.localStorage.setItem(QUICK_TEST_GAMES_KEY, JSON.stringify([...codes].slice(-50)))
+  } catch { /* the seat just stays in the saved list */ }
+  forgetSavedSeat(gameCode, seatId)
+  refreshSavedSessions()
+}
+async function quickTestFromUrl() {
+  const params = new URLSearchParams(window.location.search)
+  const role = params.get('quicktest')
+  const group = params.get('group')
+  if (!role || !group || !isLocalDevHost()) return false
+  const codeKey = `wargames:quicktest:${group}`
+  try {
+    if (role === 'host') {
+      const players = Number(params.get('players')) === 8 ? 8 : 6
+      const view = await apiRequest('/api/games', {
+        method: 'POST',
+        body: JSON.stringify({ playerName: 'Host', mapWidthMiles: 1000, players }),
+      })
+      window.localStorage.setItem(codeKey, view.code)
+      saveGame(view)
+      keepQuickTestOffHomeScreen(view.code, 'host')
+      if (params.get('start') === '1') {
+        await waitFor(async () => {
+          const room = await apiRequest(`/api/games/${view.code}`, { headers: gameHeaders('host') })
+          return room.seats.every(seat => seat.connected)
+        }, 60000, 700)
+        await startCampaign()
+      }
+    } else if (role === 'join') {
+      const seat = params.get('seat')
+      const gameCode = await waitFor(() => window.localStorage.getItem(codeKey), 60000)
+      const view = await apiRequest(`/api/games/${encodeURIComponent(gameCode)}/join`, {
+        method: 'POST',
+        body: JSON.stringify({ playerName: `Test ${seat}`, characterId: seat, representative: params.get('leader') || null }),
+      })
+      saveGame(view)
+      keepQuickTestOffHomeScreen(view.code, seat)
+    }
+  } catch (quickTestError) {
+    error.value = `Quick test: ${quickTestError.message}`
+  }
+  return true
+}
+
+// ---------- Lobby QR code: scan to open the join link ----------
+const joinQr = ref('')
+watch(() => game.value?.code, async gameCode => {
+  if (!gameCode) { joinQr.value = ''; return }
+  try {
+    joinQr.value = await QRCode.toString(`${window.location.origin}/?game=${gameCode}`, {
+      type: 'svg', margin: 1, errorCorrectionLevel: 'M', color: { dark: '#101b20', light: '#f4ecd6' },
+    })
+  } catch {
+    joinQr.value = ''
+  }
+}, { immediate: true })
+
+// ---------- "While you were away": events since this seat's last turn ended ----------
+const awayRecap = ref(null)
+function recapStorageKey() {
+  return `wargames:recap:${game.value?.code}:${game.value?.ownCharacterId}`
+}
+function readRecapMark() {
+  try { return Number(window.localStorage.getItem(recapStorageKey())) } catch { return NaN }
+}
+function writeRecapMark(count) {
+  try { window.localStorage.setItem(recapStorageKey(), String(count)) } catch { /* not saved */ }
+}
+watch(isMyTurn, (mine, wasMine) => {
+  const current = game.value
+  if (!current?.ownCharacterId) return
+  if (mine && !wasMine) {
+    const seen = readRecapMark()
+    const events = current.events.slice(Number.isFinite(seen) && seen > 0 ? seen : current.events.length)
+    awayRecap.value = events.length ? { events: events.slice(-8), more: Math.max(0, events.length - 8) } : null
+  } else if (!mine && wasMine) {
+    writeRecapMark(current.events.length)
+    awayRecap.value = null
+  }
+})
+
+// ---------- Sound effects (synthesized, no audio files) ----------
+function readSoundPref() {
+  // Off unless this device has turned it on.
+  try { return window.localStorage.getItem('wargames:sound') === 'on' } catch { return false }
+}
+const soundOn = ref(readSoundPref())
+function toggleSound() {
+  soundOn.value = !soundOn.value
+  try { window.localStorage.setItem('wargames:sound', soundOn.value ? 'on' : 'off') } catch { /* not saved */ }
+  if (soundOn.value) playSound('chime')
+}
+let audioContext = null
+function getAudio() {
+  if (!audioContext) {
+    const Context = window.AudioContext || window.webkitAudioContext
+    if (!Context) return null
+    audioContext = new Context()
+  }
+  if (audioContext.state === 'suspended') void audioContext.resume()
+  return audioContext
+}
+// Browsers only allow audio after a tap or click, so the first one unlocks it.
+function unlockAudio() {
+  getAudio()
+  window.removeEventListener('pointerdown', unlockAudio)
+}
+function noiseBuffer(audio, seconds) {
+  const buffer = audio.createBuffer(1, Math.ceil(audio.sampleRate * seconds), audio.sampleRate)
+  const data = buffer.getChannelData(0)
+  for (let index = 0; index < data.length; index += 1) data[index] = Math.random() * 2 - 1
+  return buffer
+}
+function envelope(audio, at, peak, attack, decay) {
+  const gain = audio.createGain()
+  gain.gain.setValueAtTime(0.0001, at)
+  gain.gain.exponentialRampToValueAtTime(peak, at + attack)
+  gain.gain.exponentialRampToValueAtTime(0.0001, at + attack + decay)
+  return gain
+}
+function tone(audio, out, { type = 'sine', freq, to, at, attack = 0.01, decay = 0.4, peak = 0.3 }) {
+  const osc = audio.createOscillator()
+  osc.type = type
+  osc.frequency.setValueAtTime(freq, at)
+  if (to) osc.frequency.exponentialRampToValueAtTime(to, at + attack + decay)
+  const gain = envelope(audio, at, peak, attack, decay)
+  osc.connect(gain).connect(out)
+  osc.start(at)
+  osc.stop(at + attack + decay + 0.05)
+}
+function noise(audio, out, { at, seconds = 0.05, freq = 2500, q = 1.2, peak = 0.4, type = 'bandpass' }) {
+  const source = audio.createBufferSource()
+  source.buffer = noiseBuffer(audio, seconds + 0.05)
+  const filter = audio.createBiquadFilter()
+  filter.type = type
+  filter.frequency.value = freq
+  filter.Q.value = q
+  const gain = envelope(audio, at, peak, 0.004, seconds)
+  source.connect(filter).connect(gain).connect(out)
+  source.start(at)
+}
+const sounds = {
+  // Dice tumbling in a cup: a scatter of short clicks.
+  dice(audio, out, now) {
+    for (let index = 0; index < 14; index += 1) {
+      noise(audio, out, { at: now + index * 0.055 + Math.random() * 0.03, seconds: 0.035,
+        freq: 1800 + Math.random() * 2200, peak: 0.25 + Math.random() * 0.25 })
+    }
+  },
+  // Steel on steel.
+  clash(audio, out, now) {
+    noise(audio, out, { at: now, seconds: 0.35, freq: 3500, type: 'highpass', q: 0.7, peak: 0.35 })
+    tone(audio, out, { type: 'triangle', freq: 1270, at: now, decay: 0.7, peak: 0.12 })
+    tone(audio, out, { type: 'triangle', freq: 1893, at: now, decay: 0.55, peak: 0.08 })
+  },
+  // A war horn for a captured stronghold.
+  horn(audio, out, now) {
+    const filter = audio.createBiquadFilter()
+    filter.type = 'lowpass'
+    filter.frequency.value = 900
+    filter.connect(out)
+    tone(audio, filter, { type: 'sawtooth', freq: 147, at: now, attack: 0.12, decay: 1.1, peak: 0.28 })
+    tone(audio, filter, { type: 'sawtooth', freq: 220, at: now + 0.05, attack: 0.15, decay: 1.0, peak: 0.18 })
+  },
+  // The Ring destroyed: a rising, bright chord.
+  victory(audio, out, now) {
+    [261.6, 329.6, 392, 523.3, 659.3].forEach((freq, index) =>
+      tone(audio, out, { type: 'triangle', freq, at: now + index * 0.18, attack: 0.05, decay: 1.8, peak: 0.16 }))
+  },
+  // The Ring seized: a low, falling drone.
+  doom(audio, out, now) {
+    tone(audio, out, { type: 'sawtooth', freq: 110, to: 55, at: now, attack: 0.2, decay: 2.2, peak: 0.2 })
+    tone(audio, out, { type: 'sine', freq: 130.8, to: 65, at: now + 0.1, attack: 0.2, decay: 2.0, peak: 0.2 })
+  },
+  chime(audio, out, now) {
+    tone(audio, out, { freq: 880, at: now, decay: 0.5, peak: 0.15 })
+    tone(audio, out, { freq: 1318.5, at: now + 0.09, decay: 0.6, peak: 0.12 })
+  },
+}
+function playSound(name) {
+  if (!soundOn.value || !sounds[name]) return
+  const audio = getAudio()
+  if (!audio || audio.state !== 'running') return
+  const out = audio.createGain()
+  out.gain.value = 0.7
+  out.connect(audio.destination)
+  sounds[name](audio, out, audio.currentTime + 0.01)
+}
+watch(() => [game.value?.code, game.value?.ringHolder], ([gameCode, holder], previous) => {
+  if (!previous || previous[0] !== gameCode || previous[1] !== 'frodo') return
+  if (holder === 'destroyed') playSound('victory')
+  else if (holder === 'sauron') playSound('doom')
+})
+
+// ---------- TV mode: the host's screen follows the action ----------
+const tvMode = ref(false)
+function toggleTvMode() {
+  tvMode.value = !tvMode.value
+  try {
+    if (tvMode.value && !document.fullscreenElement) void document.documentElement.requestFullscreen?.()
+    if (!tvMode.value && document.fullscreenElement) void document.exitFullscreen?.()
+  } catch { /* fullscreen is optional */ }
+  if (tvMode.value) window.setTimeout(followActiveParty, 50)
+  else resetMapView()
+}
+function focusMapOn(x, y, zoom) {
+  const world = mapWorld.value
+  if (!world) return
+  mapZoom.value = clampMapZoom(zoom)
+  mapPan.value = clampMapPan({
+    x: (0.5 - x / 100) * world.offsetWidth * mapZoom.value,
+    y: (0.5 - y / 100) * world.offsetHeight * mapZoom.value,
+  })
+}
+function followActiveParty() {
+  if (!tvMode.value) return
+  const party = activeParty.value
+  // A hidden party has no position on the host's screen: show the whole map instead.
+  if (!party || party.x === null || party.x === undefined) resetMapView()
+  else focusMapOn(party.x, party.y, 2)
+}
+watch(() => [activeParty.value?.id, activeParty.value?.x, activeParty.value?.y], () => {
+  if (tvMode.value) followActiveParty()
+})
+
 onMounted(async () => {
+  window.addEventListener('pointerdown', unlockAudio)
   refreshSavedSessions()
   window.addEventListener('storage', refreshSavedSessions)
   window.addEventListener('resize', onWindowResize)
-  void migrateLegacySeatTokens().then(showGameFromUrl)
+  void migrateLegacySeatTokens().then(async () => {
+    if (!(await quickTestFromUrl())) await showGameFromUrl()
+  })
   void checkMusicAvailable()
   compactQuery?.addEventListener?.('change', onCompactChange)
   try {
@@ -1202,15 +1503,16 @@ onBeforeUnmount(() => {
   window.clearTimeout(suppressMapClickTimer)
   window.removeEventListener('storage', refreshSavedSessions)
   window.removeEventListener('resize', onWindowResize)
-  musicAudio?.pause()
-  musicAudio = null
+  pauseAllMusic()
   clearBattleTimers()
   compactQuery?.removeEventListener?.('change', onCompactChange)
+  window.removeEventListener('pointerdown', unlockAudio)
+  void audioContext?.close()
 })
 </script>
 
 <template>
-  <main class="game-app">
+  <main class="game-app" :class="{ 'tv-mode': tvMode }">
     <header class="game-topbar">
       <a class="game-brand" href="#" aria-label="War Games home" @click.prevent="backHome">
         <span class="game-brand-mark">B</span>
@@ -1225,10 +1527,15 @@ onBeforeUnmount(() => {
           <button type="button" :class="{ selected: currentView === 'character' }" @click="currentView = 'character'">My character</button>
           <button type="button" :class="{ selected: currentView === 'campaign' }" @click="currentView = 'campaign'">Shared map</button>
         </nav>
+        <button v-if="isHost && game?.status === 'campaign'" class="rules-toggle tv-toggle" type="button"
+          :aria-pressed="tvMode" @click="toggleTvMode">{{ tvMode ? 'Exit TV' : 'TV mode' }}</button>
+        <button class="sound-toggle" type="button" :aria-pressed="soundOn"
+          :aria-label="soundOn ? 'Mute sound effects' : 'Turn on sound effects'"
+          :title="soundOn ? 'Sound effects on' : 'Sound effects off'" @click="toggleSound">{{ soundOn ? '🔊' : '🔇' }}</button>
         <button v-if="game" class="rules-toggle" type="button" :aria-expanded="rulesOpen"
           @click="rulesOpen = !rulesOpen">Rules</button>
         <button v-if="musicAvailable" class="music-toggle" :class="{ playing: musicOn }" type="button"
-          :aria-pressed="musicOn" :aria-label="musicOn ? 'Stop background music' : 'Play background music'"
+          :aria-pressed="musicOn" :aria-label="musicOn ? 'Stop background music' : `Play background music (${musicTrack === 'campaign' ? 'campaign' : 'lobby'} track)`"
           :title="musicOn ? 'Stop music' : 'Play music'" @click="toggleMusic">♪</button>
         <button class="map-editor-link" type="button" @click="emit('open-map-editor')">Map editor</button>
       </div>
@@ -1395,9 +1702,10 @@ onBeforeUnmount(() => {
               :aria-label="`Show ${marker.party.name} information`" @click.stop="toggleMapMarker(marker)">
               <img v-if="hasPortrait(marker.party.name)" class="portrait" :src="portraitUrl(marker.party.name)" alt="" @error="markPortraitMissing(marker.party.name)" /><template v-else>{{ marker.party.initial }}</template>
             </button>
-            <button v-else type="button" class="objective-pin" :class="ownerClass(marker.city.owner)"
+            <button v-else type="button" class="objective-pin stronghold-icon" :class="ownerClass(marker.city.owner)"
               :aria-expanded="selectedMarkerId === marker.key"
               :aria-label="`Show ${marker.city.objectiveName} information`" @click.stop="toggleMapMarker(marker)">
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path class="keep" d="M2 19V8h3V5h2.5v3h2V3h1v5h2V5H15v3h3v11h-6v-4a2 2 0 0 0-4 0v4z" /></svg>
               <span class="sr-only">{{ marker.city.objectiveName }}</span>
             </button>
             <div v-if="selectedMarkerId === marker.key" class="map-marker-info">
@@ -1460,6 +1768,10 @@ onBeforeUnmount(() => {
       <div class="invite-panel">
         <div><label>JOIN LINK</label><strong>{{ joinLink }}</strong><button type="button" @click="copyJoinLink">Copy</button></div>
         <div><label>GAME CODE</label><strong class="invite-code">{{ game.code }}</strong><small>Join on your phone</small></div>
+        <div v-if="joinQr" class="invite-qr">
+          <span role="img" aria-label="QR code that opens the join link" v-html="joinQr"></span>
+          <small>Scan to join</small>
+        </div>
       </div>
       <div class="lobby-teams">
         <section class="lobby-team free-group">
@@ -1550,8 +1862,12 @@ onBeforeUnmount(() => {
                 </button>
                 <button v-else type="button" class="stronghold-icon" :class="ownerClass(marker.city.owner)"
                   :aria-expanded="selectedMarkerId === marker.key"
-                  :aria-label="`Show ${marker.city.name} information`" @click.stop="toggleMapMarker(marker)">
-                  <span class="sr-only">{{ marker.city.name }}</span>
+                  :aria-label="`Show ${marker.city.name} information, garrison ${marker.city.units ?? 0} of ${marker.city.initialUnits ?? 0}`"
+                  @click.stop="toggleMapMarker(marker)">
+                  <svg viewBox="0 0 20 20" aria-hidden="true"><path class="keep" d="M2 19V8h3V5h2.5v3h2V3h1v5h2V5H15v3h3v11h-6v-4a2 2 0 0 0-4 0v4z" /></svg>
+                  <span v-if="marker.city.initialUnits" class="garrison-pips" aria-hidden="true">
+                    <i v-for="pip in marker.city.initialUnits" :key="pip" :class="{ lost: pip > (marker.city.units ?? 0) }"></i>
+                  </span>
                 </button>
                 <div v-if="selectedMarkerId === marker.key" class="map-marker-info">
                   <template v-if="marker.kind === 'party'">
@@ -1586,6 +1902,12 @@ onBeforeUnmount(() => {
                 aria-label="Center on my party" title="Center on my party" @click="centerOnOwnParty">◎</button>
             </div>
             <div v-if="movementMode" class="map-instruction">Tap map to choose destination</div>
+            <section v-if="awayRecap && currentView !== 'host'" class="away-recap" aria-label="While you were away" @click.stop @pointerdown.stop @wheel.stop>
+              <header><strong>While you were away</strong><button type="button" aria-label="Dismiss" @click="awayRecap = null">×</button></header>
+              <p v-if="awayRecap.more" class="away-more">…and {{ awayRecap.more }} earlier {{ awayRecap.more === 1 ? 'event' : 'events' }}</p>
+              <ul><li v-for="(event, index) in awayRecap.events" :key="index">{{ event }}</li></ul>
+              <button class="gold-button" type="button" @click="awayRecap = null">Your turn</button>
+            </section>
           </div>
           <div class="map-footer">
             <span>MAP SCALE <b>{{ game.mapWidthMiles.toLocaleString() }} mi</b></span>
@@ -1877,9 +2199,15 @@ onBeforeUnmount(() => {
 .map-icon-ring-site { z-index: 2; }
 .map-icon-marker.active .campaign-party-icon { outline: 2px solid #f3df9e; outline-offset: 3px; }
 .map-icon-marker.own .campaign-party-icon { box-shadow: 0 0 0 5px #f4de7b4a,0 2px 7px #101b20; }
-.objective-pin { width: 14px; height: 14px; border: 2px solid #f0dfab; border-radius: 3px; background: #4a9283; }
-.objective-pin.dark,.stronghold-icon.dark { background: #a65949; }
-.stronghold-icon { width: 15px; height: 15px; border: 2px solid #f3e7c1; border-radius: 3px; background: #458675; box-shadow: 0 1px 4px #101b20; }
+/* Strongholds: a small keep in team colors, with one pip per garrison unit underneath. */
+.stronghold-icon { position: relative; width: 20px; height: 20px; border: 0; background: transparent; filter: drop-shadow(0 1px 2px #101b20); }
+.stronghold-icon svg { width: 100%; height: 100%; display: block; overflow: visible; }
+.stronghold-icon .keep { fill: #3f8a78; stroke: #f3e7c1; stroke-width: 1.4; stroke-linejoin: round; }
+.stronghold-icon.dark .keep { fill: #a65949; }
+.garrison-pips { position: absolute; top: 100%; left: 50%; display: flex; gap: 2px; margin-top: 1px; transform: translateX(-50%); pointer-events: none; }
+.garrison-pips i { width: 4px; height: 4px; border-radius: 50%; background: #f3e7c1; box-shadow: 0 0 0 1px #101b20aa; }
+.garrison-pips i.lost { background: transparent; box-shadow: inset 0 0 0 1px #f3e7c1, 0 0 0 1px #101b2066; }
+.objective-pin { width: 18px; height: 18px; }
 .map-icon-marker button:focus-visible { outline: 2px solid #fff0a7; outline-offset: 3px; }
 .map-marker-info { position: absolute; top: 19px; left: 0; z-index: 1; display: grid; gap: 4px; min-width: max-content; max-width: 190px; padding: 7px 9px; border: 1px solid #697b6d; border-radius: 5px; background: #101b20f2; color: #e6ebdf; box-shadow: 0 3px 12px #080f13aa; transform: translateX(-50%); pointer-events: auto; }
 .map-marker-info strong { font-size: 10px; }
@@ -1911,13 +2239,17 @@ onBeforeUnmount(() => {
 .seat-card>.gold-button { display: block; width: min(100%,400px); margin: 0 auto; }
 .lobby-screen { flex: 1; min-height: 0; overflow-y: auto; padding: 16px clamp(14px,4vw,48px) 22px; text-align: center; background: linear-gradient(#0f1b20a8,#0f1b20db), url('/map-assets/middle-earth/map.webp') center / cover; }
 .lobby-screen>h1 { margin: 4px 0 10px; text-align: center; font: 600 18px Georgia,serif; }
-.invite-panel { min-height: 85px; display: grid; grid-template-columns: 1fr 1fr; margin: 0 auto 18px; border: 1px solid #3c5353; border-radius: 10px; background: #122126ec; text-align: left; }
+.invite-panel { min-height: 85px; display: grid; grid-template-columns: 1fr 1fr auto; margin: 0 auto 18px; border: 1px solid #3c5353; border-radius: 10px; background: #122126ec; text-align: left; }
 .invite-panel>div { position: relative; display: grid; align-content: center; gap: 6px; padding: 12px 20px; }
 .invite-panel>div+div { border-left: 1px solid #35494a; }
 .invite-panel strong { color: #dfe5dc; font-size: 13px; }
 .invite-panel .invite-code { color: #e2c36e; font-size: 24px; letter-spacing: 1px; }
 .invite-panel button { position: absolute; right: 12px; padding: 7px 13px; border: 1px solid #4a6262; border-radius: 6px; background: #1b2a2e; color: #e5e9e2; cursor: pointer; }
 .invite-panel small { position: absolute; right: 14px; top: 50%; color: #bac4bd; font-size: 10px; transform: translateY(-50%); }
+.invite-panel .invite-qr { justify-items: center; gap: 4px; padding: 10px 14px; }
+.invite-qr span { width: 112px; height: 112px; display: block; border-radius: 6px; overflow: hidden; }
+.invite-qr span :deep(svg) { width: 100%; height: 100%; display: block; }
+.invite-panel .invite-qr small { position: static; transform: none; }
 .lobby-teams { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; text-align: left; }
 .lobby-team { min-height: 290px; overflow: hidden; border: 1px solid #35675c; border-radius: 10px; background: #10251fe8; }
 .lobby-team.dark-group { border-color: #72443a; background: #2a201fe8; }
@@ -2025,6 +2357,36 @@ onBeforeUnmount(() => {
 .representative-picker { margin: 4px 0 14px; }
 .representative-picker div { display: flex; flex-wrap: wrap; gap: 6px; }
 .representative-picker button { min-width: 78px; }
+.sound-toggle { width: 26px; height: 26px; display: inline-grid; place-items: center; padding: 0; border: 1px solid #3f5458; border-radius: 50%; background: transparent; font-size: 12px; line-height: 1; cursor: pointer; }
+.sound-toggle[aria-pressed="false"] { opacity: .6; }
+.tv-toggle[aria-pressed="true"] { border-color: var(--gold); color: var(--gold); }
+/* "While you were away" */
+.away-recap { position: absolute; top: 12px; left: 50%; z-index: 6; width: min(360px, calc(100% - 24px)); max-height: calc(100% - 24px); overflow-y: auto; padding: 12px 14px 14px; border: 1px solid #5d6b55; border-radius: 10px; background: #142228f2; color: #d6ddd6; font-size: 12px; line-height: 1.45; text-align: left; box-shadow: 0 10px 30px #0008; transform: translateX(-50%); cursor: default; }
+.away-recap header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.away-recap header strong { color: var(--gold); font-size: 13px; letter-spacing: .5px; }
+.away-recap header button { width: 28px; height: 28px; border: 0; background: transparent; color: #aab8ad; font-size: 20px; cursor: pointer; }
+.away-recap ul { margin: 0 0 10px; padding-left: 16px; }
+.away-recap li { margin: 3px 0; }
+.away-recap .away-more { margin: 0 0 4px; color: #8e9c94; font-size: 11px; }
+.away-recap .gold-button { width: 100%; }
+/* TV mode: bigger type, a larger battle card, and a map that glides to the active party. */
+.tv-mode .play-map-world { transition: transform .9s ease; }
+.tv-mode .play-map-world.gesturing { transition: none; }
+.tv-mode .campaign-layout { grid-template-columns: 330px minmax(0,1fr); }
+.tv-mode .campaign-sidebar h1 { font-size: 38px; }
+.tv-mode .active-party-label { font-size: 16px; }
+.tv-mode .sidebar-card h2 { font-size: 12px; }
+.tv-mode .party-list-row { min-height: 38px; font-size: 15px; }
+.tv-mode .party-list-row small { font-size: 12px; }
+.tv-mode .recent-events { font-size: 13px; }
+.tv-mode .map-footer { display: none; }
+.tv-mode .battle-card { width: min(780px, 100%); padding: 28px 32px; font-size: 18px; }
+.tv-mode .battle-card-title { font-size: 14px; }
+.tv-mode .battle-card-side strong { font-size: 24px; }
+.tv-mode .battle-die { width: 52px; height: 52px; font-size: 28px; }
+.tv-mode .battle-card-dice { max-width: 240px; gap: 8px; }
+.tv-mode .battle-card-total { font-size: 22px; }
+.tv-mode .battle-card-result { font-size: 19px; }
 /* Music: just a small icon in the header, on the main (wide) screen only. */
 .music-toggle { width: 26px; height: 26px; display: inline-grid; place-items: center; padding: 0; border: 1px solid #3f5458; border-radius: 50%; background: transparent; color: #9ba6a0; font-size: 13px; line-height: 1; cursor: pointer; }
 .music-toggle:hover { color: var(--gold); }
@@ -2118,7 +2480,9 @@ onBeforeUnmount(() => {
   .campaign-party-icon.multi-initial { font-size: 7px; }
   .map-icon-marker.own .campaign-party-icon { box-shadow: 0 0 0 3px #f4de7b55,0 1px 4px #101b20; }
   .map-icon-marker.active .campaign-party-icon { outline-width: 1.5px; outline-offset: 2px; }
-  .stronghold-icon { width: 10px; height: 10px; border-width: 1.5px; }
+  .stronghold-icon { width: 13px; height: 13px; }
+  .garrison-pips { gap: 1px; }
+  .garrison-pips i { width: 3px; height: 3px; }
   .ring-site-icon { width: 16px; height: 16px; border-width: 1.5px; font-size: 12px; box-shadow: 0 0 0 2px #8c492f77; }
   .map-zoom-controls { top: 8px; right: 8px; grid-template-columns: 32px; gap: 4px; padding: 4px; }
   .map-zoom-controls button { min-height: 32px; font-size: 16px; }

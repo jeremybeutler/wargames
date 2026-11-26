@@ -115,6 +115,21 @@ host can start after every seat is filled.
 Everyone in a game can open a short rule sheet from the **Rules** button in
 the header.
 
+- **Joining:** the lobby shows a QR code for the join link; scan it with a phone
+  camera. (On a local test, open the host page from the network address so the
+  code points somewhere phones can reach.)
+- **While you were away:** when your turn starts, a card lists what happened
+  since your last turn ended on this device.
+- **Sound effects:** dice, battle clashes, a horn for a captured stronghold,
+  and themes for the Ring's fate are synthesized in the browser (no audio
+  files). They're off by default; the speaker button in the header turns them
+  on for that device.
+- **Strongholds** show as keeps in their owner's color with one pip per
+  garrison unit (hollow pips are lost units).
+- **TV mode** (host only): a larger, full-screen view whose map glides to the
+  active party each turn, with a bigger battle card. Hidden parties show the
+  whole map.
+
 Character portraits are optional. Put full-size square originals in
 `assets/portraits/` (kept out of git and deploys), named after the leader in
 lowercase without accents: `frodo.png`, `sam.png`, `merry.png`, `pippin.png`,
@@ -172,9 +187,12 @@ there, including right after moving. Each opposing party on Mount Doom first
 fights him once, in turn order; if Frodo falls (his Hobbits are lost first)
 Sauron captures the Ring,
 and if he survives them all the Free Peoples win. On wide screens, the ♪ button in the
-game header plays background music from `frontend/public/music/theme.mp3`.
-That folder is kept out of git and deploys (add your own file locally); the
-button only appears where the file exists.
+game header plays background music: `frontend/public/music/theme.mp3` in the
+lobby and setup screens, and `frontend/public/music/ambience.mp3` during the
+campaign. It switches tracks as the screen changes, and each track resumes
+where it left off. That folder is kept out of git and deploys (add your own
+files locally); the button only appears where a file exists, and if one track
+is missing the other plays everywhere.
 Movement, army damage, direct-contact attacks, stronghold capture, hidden
 positions, turn order, Ring capture/destruction, and victory are validated by
 the API. For an internet-hosted game, publish the frontend and API behind the
@@ -182,6 +200,28 @@ same public origin (or route `/api` to the API); the development Vite server
 also listens on the local network for phone testing. For that local test, open
 the host page using Vite's printed **Network** URL rather than `localhost`, so
 the copied join link points to an address the phone can reach.
+
+## Quick test games
+
+To try a change with every seat filled, run:
+
+```powershell
+.\scripts\test-game.ps1                  # 6 players, waits in the lobby
+.\scripts\test-game.ps1 -Players 8 -Start
+.\scripts\test-game.ps1 -Leaders @{ frodo = 'Sam'; aragorn = 'Gandalf' }
+```
+
+It starts the API (port 8080) and the Vite dev server (port 5173) in their own
+windows if they aren't already running. Then it opens your default browser with
+a host tab that creates the game and one tab per character that joins its seat.
+`-Start` begins the campaign once everyone has joined. Each tab is its own seat,
+so switch tabs to play each turn. Frontend edits reload live; restart the API
+window after backend changes. If `play.ps1` is already serving port 8080, the
+tabs use that build's API. Add `-Url http://localhost:8080` to test the built app
+instead of Vite.
+
+Quick test links only work on localhost, reloading a tab reopens its seat, and
+test games are left off the home screen's saved-games list.
 
 ## Map images
 
