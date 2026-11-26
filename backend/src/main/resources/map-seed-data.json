@@ -503,8 +503,8 @@
     },
     {
       "name": "Grey Havens",
-      "x": 15,
-      "y": 23,
+      "x": 16.0,
+      "y": 31.3,
       "tier": 1,
       "kind": "town"
     },
@@ -531,29 +531,29 @@
     },
     {
       "name": "Rivendell",
-      "x": 48,
-      "y": 32,
+      "x": 40.2,
+      "y": 26.4,
       "tier": 1,
       "kind": "town"
     },
     {
       "name": "Moria",
-      "x": 45,
-      "y": 47,
+      "x": 43.3,
+      "y": 44.8,
       "tier": 1,
       "kind": "town"
     },
     {
       "name": "Lothlórien",
-      "x": 58,
-      "y": 44,
+      "x": 48.0,
+      "y": 50.5,
       "tier": 1,
       "kind": "town"
     },
     {
       "name": "Erebor",
-      "x": 82,
-      "y": 16,
+      "x": 80.1,
+      "y": 14.6,
       "tier": 1,
       "kind": "town"
     },
@@ -566,8 +566,8 @@
     },
     {
       "name": "Lake-town",
-      "x": 75,
-      "y": 26,
+      "x": 69.3,
+      "y": 20.8,
       "tier": 1,
       "kind": "town"
     },
@@ -580,29 +580,29 @@
     },
     {
       "name": "Edoras",
-      "x": 56,
-      "y": 66,
+      "x": 55.3,
+      "y": 65.4,
       "tier": 1,
       "kind": "town"
     },
     {
       "name": "Helm’s Deep",
-      "x": 46,
-      "y": 68,
+      "x": 45.3,
+      "y": 71.0,
       "tier": 1,
       "kind": "town"
     },
     {
       "name": "Minas Tirith",
-      "x": 59,
-      "y": 78,
+      "x": 58.0,
+      "y": 76.8,
       "tier": 1,
       "kind": "town"
     },
     {
       "name": "Osgiliath",
-      "x": 64,
-      "y": 77,
+      "x": 59.9,
+      "y": 76.0,
       "tier": 1,
       "kind": "town"
     },
@@ -622,22 +622,22 @@
     },
     {
       "name": "Barad-dûr",
-      "x": 80,
-      "y": 70,
+      "x": 85.8,
+      "y": 65.0,
       "tier": 1,
       "kind": "town"
     },
     {
       "name": "Mount Doom",
-      "x": 83,
-      "y": 67,
+      "x": 81.6,
+      "y": 68.4,
       "tier": 1,
       "kind": "town"
     },
     {
       "name": "Black Gate",
-      "x": 74,
-      "y": 61,
+      "x": 76.0,
+      "y": 59.0,
       "tier": 1,
       "kind": "town"
     },
@@ -650,15 +650,15 @@
     },
     {
       "name": "Misty Mountains",
-      "x": 44,
-      "y": 39,
+      "x": 43.0,
+      "y": 30.0,
       "tier": 2,
       "kind": "landmark"
     },
     {
       "name": "Ered Luin",
-      "x": 23,
-      "y": 25,
+      "x": 21.5,
+      "y": 17.0,
       "tier": 2,
       "kind": "landmark"
     },
@@ -678,15 +678,15 @@
     },
     {
       "name": "Iron Hills",
-      "x": 92,
-      "y": 34,
+      "x": 84.5,
+      "y": 36.0,
       "tier": 2,
       "kind": "landmark"
     },
     {
       "name": "Fangorn Forest",
-      "x": 63,
-      "y": 58,
+      "x": 45.0,
+      "y": 64.3,
       "tier": 2,
       "kind": "landmark"
     },
@@ -699,50 +699,50 @@
     },
     {
       "name": "Dead Marshes",
-      "x": 68,
-      "y": 59,
+      "x": 69.0,
+      "y": 56.8,
       "tier": 2,
       "kind": "landmark"
     },
     {
       "name": "Emyn Muil",
-      "x": 69,
-      "y": 67,
+      "x": 64.5,
+      "y": 51.5,
       "tier": 2,
       "kind": "landmark"
     },
     {
       "name": "Mount Gundabad",
-      "x": 49,
-      "y": 17,
+      "x": 47.3,
+      "y": 8.5,
       "tier": 2,
       "kind": "landmark"
     },
     {
       "name": "Anduin",
-      "x": 57,
-      "y": 48,
+      "x": 51.6,
+      "y": 40.0,
       "tier": 2,
       "kind": "landmark"
     },
     {
       "name": "Weathertop",
-      "x": 39,
-      "y": 36,
+      "x": 35.4,
+      "y": 33.4,
       "tier": 2,
       "kind": "landmark"
     },
     {
       "name": "Amon Hen",
-      "x": 62,
-      "y": 51,
+      "x": 61.2,
+      "y": 50.0,
       "tier": 2,
       "kind": "landmark"
     },
     {
       "name": "Pelennor Fields",
-      "x": 61,
-      "y": 79,
+      "x": 57.6,
+      "y": 74.0,
       "tier": 2,
       "kind": "landmark"
     },
@@ -755,8 +755,8 @@
     },
     {
       "name": "Ithilien",
-      "x": 68,
-      "y": 72,
+      "x": 61.2,
+      "y": 73.0,
       "tier": 2,
       "kind": "landmark"
     },
@@ -766,6 +766,133 @@
       "y": 75,
       "tier": 2,
       "kind": "landmark"
+    }
+  ],
+  "middleEarthPlaceCorrections": [
+    {
+      "name": "Grey Havens",
+      "fromX": 15,
+      "fromY": 23
+    },
+    {
+      "name": "Rivendell",
+      "fromX": 48,
+      "fromY": 32
+    },
+    {
+      "name": "Moria",
+      "fromX": 45,
+      "fromY": 47
+    },
+    {
+      "name": "Lothlórien",
+      "fromX": 58,
+      "fromY": 44
+    },
+    {
+      "name": "Erebor",
+      "fromX": 82,
+      "fromY": 16
+    },
+    {
+      "name": "Lake-town",
+      "fromX": 75,
+      "fromY": 26
+    },
+    {
+      "name": "Edoras",
+      "fromX": 56,
+      "fromY": 66
+    },
+    {
+      "name": "Helm’s Deep",
+      "fromX": 46,
+      "fromY": 68
+    },
+    {
+      "name": "Minas Tirith",
+      "fromX": 59,
+      "fromY": 78
+    },
+    {
+      "name": "Osgiliath",
+      "fromX": 64,
+      "fromY": 77
+    },
+    {
+      "name": "Barad-dûr",
+      "fromX": 80,
+      "fromY": 70
+    },
+    {
+      "name": "Mount Doom",
+      "fromX": 83,
+      "fromY": 67
+    },
+    {
+      "name": "Black Gate",
+      "fromX": 74,
+      "fromY": 61
+    },
+    {
+      "name": "Misty Mountains",
+      "fromX": 44,
+      "fromY": 39
+    },
+    {
+      "name": "Ered Luin",
+      "fromX": 23,
+      "fromY": 25
+    },
+    {
+      "name": "Iron Hills",
+      "fromX": 92,
+      "fromY": 34
+    },
+    {
+      "name": "Fangorn Forest",
+      "fromX": 63,
+      "fromY": 58
+    },
+    {
+      "name": "Dead Marshes",
+      "fromX": 68,
+      "fromY": 59
+    },
+    {
+      "name": "Emyn Muil",
+      "fromX": 69,
+      "fromY": 67
+    },
+    {
+      "name": "Mount Gundabad",
+      "fromX": 49,
+      "fromY": 17
+    },
+    {
+      "name": "Anduin",
+      "fromX": 57,
+      "fromY": 48
+    },
+    {
+      "name": "Weathertop",
+      "fromX": 39,
+      "fromY": 36
+    },
+    {
+      "name": "Amon Hen",
+      "fromX": 62,
+      "fromY": 51
+    },
+    {
+      "name": "Pelennor Fields",
+      "fromX": 61,
+      "fromY": 79
+    },
+    {
+      "name": "Ithilien",
+      "fromX": 68,
+      "fromY": 72
     }
   ]
 }

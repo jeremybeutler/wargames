@@ -79,6 +79,18 @@ body {
   align-items:center;
   gap:9px
 }
+.topbar-right .map-editor-link {
+  border:1px solid #3c4d4d;
+  border-radius:4px;
+  padding:6px 9px;
+  background:#1b2b30;
+  color:#d5c285;
+  font:600 10px 'DM Sans',sans-serif;
+  cursor:pointer
+}
+.topbar-right .map-editor-link:hover {
+  background:#283a3c
+}
 .status-dot,.caption-dot {
   width:6px;
   height:6px;
@@ -100,6 +112,78 @@ body {
   background:#202f33;
   color:#d6d5c8;
   font:600 10px 'DM Sans',sans-serif
+}
+.map-editor-gate {
+  min-height:100vh;
+  display:grid;
+  place-items:center;
+  padding:20px;
+  background:linear-gradient(#101b20c9,#101b20e8),url('/map-assets/middle-earth/map.png') center / cover
+}
+.map-editor-gate-card {
+  width:min(100%,440px);
+  display:grid;
+  gap:12px;
+  padding:28px;
+  border:1px solid #6b6043;
+  border-radius:12px;
+  background:#142329f2;
+  box-shadow:0 24px 70px #080f13aa
+}
+.map-editor-gate-card h1 {
+  margin:0;
+  color:#e6c982;
+  font:700 28px 'Barlow Condensed',sans-serif
+}
+.map-editor-gate-card p {
+  margin:0;
+  color:#aeb8a9;
+  font-size:11px;
+  line-height:1.5
+}
+.map-editor-gate-card .section-eyebrow {
+  color:#d6b66f;
+  font-size:9px;
+  font-weight:700;
+  letter-spacing:1.5px
+}
+.map-editor-gate-card label {
+  margin-top:6px;
+  color:#aeb8a9;
+  font-size:9px;
+  font-weight:700;
+  letter-spacing:1.5px
+}
+.map-editor-gate-card input {
+  width:100%;
+  min-height:42px;
+  padding:8px 11px;
+  border:1px solid #455b5d;
+  border-radius:5px;
+  background:#17262b;
+  color:#e5e9df;
+  font:inherit
+}
+.map-editor-gate-card .map-editor-auth-error {
+  color:#f0c4b8
+}
+.map-editor-auth-button,.map-editor-back-button {
+  min-height:40px;
+  border:1px solid #826e45;
+  border-radius:6px;
+  background:#342f22;
+  color:#ead9a2;
+  font:600 11px 'DM Sans',sans-serif;
+  cursor:pointer
+}
+.map-editor-auth-button:disabled {
+  opacity:.5;
+  cursor:not-allowed
+}
+.map-editor-back-button {
+  border-color:#3b5558;
+  background:#1a2a2f;
+  color:#c7d0c4
 }
 .map-layout {
   display:flex;

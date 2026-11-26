@@ -1,5 +1,6 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import Gameplay from './Gameplay.vue'
 
 const ART_MAP = { width: 1579, height: 797 }
 const TILE_SIZE = 256
@@ -14,8 +15,16 @@ const TERRAIN_TYPES = [
   { value: 'mountain', label: 'Mountains', name: 'Mountain', color: '#bd8b69' },
   { value: 'river', label: 'Rivers', name: 'River', color: '#58a9c7' },
   { value: 'forest', label: 'Forests', name: 'Forest', color: '#77a66b' },
+  { value: 'volcanic', label: 'Volcanic', name: 'Volcanic', color: '#c95f45' },
   { value: 'other', label: 'Other', name: 'Terrain', color: '#d1b56c' },
 ]
+const appView = ref(new URLSearchParams(window.location.search).get('view') === 'map' ? 'map' : 'game')
+const mapEditorAuthorized = ref(false)
+const mapEditorToken = ref('')
+const mapEditorTokenInput = ref('')
+const mapEditorAuthError = ref('')
+const isRestoringMapEditorAccess = ref(false)
+const MAP_EDITOR_TOKEN_KEY = 'wargames-map-editor-token'
 const campaign = ref(null)
 const campaigns = ref([])
 const selectedCampaignSlug = ref('book-of-mormon')
@@ -59,6 +68,98 @@ let movingArmyStart = null
 let zoomTimer = null
 let campaignLoadId = 0
 let terrainLoadId = 0
+let mapEditorInitialized = false
+
+function initializeMapEditor() {
+  if (mapEditorInitialized) return
+  mapEditorInitialized = true
+  measureMap()
+  viewport.value.addEventListener('wheel', handleWheel, { passive: false })
+  window.addEventListener('resize', measureMap)
+  window.addEventListener('keydown', onKeydown)
+  void loadCampaignData()
+  void loadTerrainRegions()
+  if (mapMode.value === 'tiles') loadCesTiles()
+}
+
+function openMapEditor() {
+  appView.value = 'map'
+  void restoreMapEditorAccess()
+}
+
+function stopMapEditor() {
+  if (!mapEditorInitialized) return
+  viewport.value?.removeEventListener('wheel', handleWheel)
+  window.removeEventListener('resize', measureMap)
+  window.removeEventListener('keydown', onKeydown)
+  mapEditorInitialized = false
+}
+
+function openGameplay() {
+  stopMapEditor()
+  appView.value = 'game'
+  const url = new URL(window.location.href)
+  url.searchParams.delete('view')
+  window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
+}
+
+function lockMapEditor() {
+  stopMapEditor()
+  sessionStorage.removeItem(MAP_EDITOR_TOKEN_KEY)
+  mapEditorAuthorized.value = false
+  mapEditorToken.value = ''
+  mapEditorTokenInput.value = ''
+  appView.value = 'game'
+  openGameplay()
+}
+
+async function authorizeMapEditor() {
+  mapEditorAuthError.value = ''
+  const token = mapEditorTokenInput.value.trim()
+  if (!token) {
+    mapEditorAuthError.value = 'Enter the administrator token.'
+    return
+  }
+  try {
+    await apiRequest('/api/map-editor/access', {
+      method: 'POST',
+      headers: { 'X-Map-Editor-Token': token },
+    })
+    mapEditorToken.value = token
+    sessionStorage.setItem(MAP_EDITOR_TOKEN_KEY, token)
+    mapEditorAuthorized.value = true
+    mapEditorTokenInput.value = ''
+    await nextTick()
+    initializeMapEditor()
+  } catch (error) {
+    mapEditorAuthError.value = error.message
+  }
+}
+
+async function restoreMapEditorAccess() {
+  stopMapEditor()
+  mapEditorAuthorized.value = false
+  mapEditorAuthError.value = ''
+  const token = sessionStorage.getItem(MAP_EDITOR_TOKEN_KEY)
+  if (!token) return
+  isRestoringMapEditorAccess.value = true
+  try {
+    await apiRequest('/api/map-editor/access', {
+      method: 'POST',
+      headers: { 'X-Map-Editor-Token': token },
+    })
+    mapEditorToken.value = token
+    mapEditorAuthorized.value = true
+    await nextTick()
+    initializeMapEditor()
+  } catch (error) {
+    sessionStorage.removeItem(MAP_EDITOR_TOKEN_KEY)
+    mapEditorToken.value = ''
+    mapEditorAuthError.value = error.message
+  } finally {
+    isRestoringMapEditorAccess.value = false
+  }
+}
 
 function terrainMapKeyForMode(mode) {
   return mode === 'middle-earth' ? 'middle-earth' : 'ces'
@@ -123,8 +224,10 @@ function campaignSlugForMode(mode) {
   return selectedCampaignSlug.value
 }
 
-async function apiRequest(url, options) {
-  const response = await fetch(url, options)
+async function apiRequest(url, options = {}) {
+  const headers = { ...(options.headers || {}) }
+  if (mapEditorToken.value) headers['X-Map-Editor-Token'] = mapEditorToken.value
+  const response = await fetch(url, { ...options, headers })
   if (response.status === 204) return null
 
   const contentType = response.headers.get('content-type') || ''
@@ -728,32 +831,43 @@ watch([mapMode, cesTiles, zoom, scaleRevision], async () => {
 })
 
 onMounted(() => {
-  measureMap()
-  viewport.value.addEventListener('wheel', handleWheel, { passive: false })
-  window.addEventListener('resize', measureMap)
-  window.addEventListener('keydown', onKeydown)
-  void loadCampaignData()
-  void loadTerrainRegions()
-  if (mapMode.value === 'tiles') loadCesTiles()
+  if (appView.value === 'map') void restoreMapEditorAccess()
 })
 
 onBeforeUnmount(() => {
   window.clearTimeout(zoomTimer)
-  viewport.value?.removeEventListener('wheel', handleWheel)
-  window.removeEventListener('resize', measureMap)
-  window.removeEventListener('keydown', onKeydown)
+  stopMapEditor()
 })
 </script>
 
 <template>
-  <main class="app-shell">
+  <Gameplay v-if="appView === 'game'" @open-map-editor="openMapEditor" />
+  <main v-else-if="!mapEditorAuthorized" class="map-editor-gate">
+    <form class="map-editor-gate-card" @submit.prevent="authorizeMapEditor">
+      <p class="section-eyebrow">RESTRICTED VIEW</p>
+      <h1>Map editor</h1>
+      <p>Administrator access is required to view or change campaign map data.</p>
+      <label for="map-editor-token">ADMINISTRATOR TOKEN</label>
+      <input id="map-editor-token" v-model="mapEditorTokenInput" type="password"
+        autocomplete="current-password" :disabled="isRestoringMapEditorAccess" />
+      <p v-if="mapEditorAuthError" class="map-editor-auth-error" role="alert">{{ mapEditorAuthError }}</p>
+      <button class="map-editor-auth-button" type="submit"
+        :disabled="isRestoringMapEditorAccess || !mapEditorTokenInput.trim()">
+        {{ isRestoringMapEditorAccess ? 'Checking access…' : 'Unlock map editor' }}
+      </button>
+      <button class="map-editor-back-button" type="button" @click="openGameplay">Return to campaign play</button>
+    </form>
+  </main>
+  <main v-else class="app-shell">
     <header class="topbar">
-      <a class="brand" href="#" aria-label="BOM Wargames home">
-        <span class="brand-mark">B</span>
-        <span class="brand-copy"><strong>BOM WARGAMES</strong><small>FIELD MAP · ALMA 52</small></span>
+      <a class="brand" href="#" aria-label="Wargames home">
+        <span class="brand-mark">W</span>
+        <span class="brand-copy"><strong>WARGAMES</strong><small>FIELD MAP</small></span>
       </a>
       <div class="topbar-right">
         <span class="status-dot"></span><span class="status-text">SANDBOX</span>
+        <button class="map-editor-link" type="button" @click="openGameplay">Campaign play</button>
+        <button class="map-editor-link" type="button" @click="lockMapEditor">Lock editor</button>
         <button class="profile" aria-label="Player profile">JB</button>
       </div>
     </header>

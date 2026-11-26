@@ -10,10 +10,12 @@ import org.bomwargames.model.Campaign;
 import org.bomwargames.model.CampaignEvent;
 import org.bomwargames.model.Place;
 import org.bomwargames.model.Route;
+import org.bomwargames.model.TerrainRegion;
 import org.bomwargames.repository.CampaignEventRepository;
 import org.bomwargames.repository.CampaignRepository;
 import org.bomwargames.repository.PlaceRepository;
 import org.bomwargames.repository.RouteRepository;
+import org.bomwargames.repository.TerrainRegionRepository;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.stereotype.Component;
 
@@ -23,15 +25,17 @@ public class CampaignDataSeeder implements CommandLineRunner {
     private final PlaceRepository places;
     private final RouteRepository routes;
     private final CampaignEventRepository events;
+    private final TerrainRegionRepository terrainRegions;
     private final ObjectMapper objectMapper;
 
     public CampaignDataSeeder(CampaignRepository campaigns, PlaceRepository places,
                               RouteRepository routes, CampaignEventRepository events,
-                              ObjectMapper objectMapper) {
+                              TerrainRegionRepository terrainRegions, ObjectMapper objectMapper) {
         this.campaigns = campaigns;
         this.places = places;
         this.routes = routes;
         this.events = events;
+        this.terrainRegions = terrainRegions;
         this.objectMapper = objectMapper;
     }
 
@@ -75,8 +79,71 @@ public class CampaignDataSeeder implements CommandLineRunner {
         seedLayer(adventure, "artwork", bookOfMormonArtwork, mapData.alternateNames(), true);
         seedLayer(adventure, "tiles", mapData.tilePlaces(), mapData.alternateNames(), true);
         seedLayer(middleEarth, "middle-earth", mapData.middleEarthPlaces(), mapData.alternateNames(), false);
+        correctMiddleEarthPlaces(middleEarth, mapData);
         seedMiddleEarthRoutes(middleEarth);
-        seedMiddleEarthEvents(middleEarth);
+        seedMiddleEarthEvents(middleEarth, mapData.middleEarthPlaces());
+        seedMordorVolcanicTerrain();
+    }
+
+    /**
+     * Moves existing Middle-earth places (and the reference events at them) from their old
+     * seed coordinates to the coordinates calibrated against the map art. Rows that no longer
+     * sit at the old coordinates were edited by hand and are left alone, so this runs safely
+     * on every startup.
+     */
+    private void correctMiddleEarthPlaces(Campaign campaign, MapSeedData mapData) {
+        if (mapData.middleEarthPlaceCorrections() == null) return;
+        List<Place> existingPlaces = places.findByCampaign_Id(campaign.getId()).stream()
+            .filter(place -> "middle-earth".equals(place.getMapLayer()))
+            .toList();
+        List<CampaignEvent> existingEvents = events.findByCampaign_Id(campaign.getId());
+        for (PlaceCorrection correction : mapData.middleEarthPlaceCorrections()) {
+            PlaceSeed target = mapData.middleEarthPlaces().stream()
+                .filter(seed -> seed.name().equals(correction.name()))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException(
+                    "Place correction has no seed entry: " + correction.name()));
+            for (Place place : existingPlaces) {
+                if (correction.name().equals(place.getName())
+                        && sameCoordinate(place.getX(), correction.fromX())
+                        && sameCoordinate(place.getY(), correction.fromY())) {
+                    place.setX(target.x());
+                    place.setY(target.y());
+                    places.save(place);
+                }
+            }
+            for (CampaignEvent event : existingEvents) {
+                if (correction.name().equals(event.getPlaceName())
+                        && sameCoordinate(event.getX(), correction.fromX())
+                        && sameCoordinate(event.getY(), correction.fromY())) {
+                    event.setX(target.x());
+                    event.setY(target.y());
+                    events.save(event);
+                }
+            }
+        }
+    }
+
+    /** Volcanic ash strokes covering the Mordor plateau inside the mountain ring. */
+    private void seedMordorVolcanicTerrain() {
+        boolean hasVolcanic = terrainRegions.findByMapKeyAndMapLayerOrderByIdAsc("middle-earth", "middle-earth")
+            .stream().anyMatch(region -> "volcanic".equals(region.getTerrainType()));
+        if (hasVolcanic) return;
+        double[][][] strokes = {
+            {{76.8, 64.5}, {86.3, 64.5}},
+            {{70.2, 67.5}, {88.4, 67.5}},
+            {{70.2, 70.5}, {88.4, 70.5}},
+            {{71.2, 73.5}, {86.3, 73.5}},
+            {{71.8, 76.5}, {85.0, 76.5}},
+            {{73.5, 78.8}, {83.2, 78.8}},
+        };
+        double[] brushSizes = {3, 3, 3, 3, 3, 2};
+        for (int index = 0; index < strokes.length; index++) {
+            List<TerrainRegion.RegionPoint> points = new ArrayList<>();
+            for (double[] point : strokes[index]) points.add(new TerrainRegion.RegionPoint(point[0], point[1]));
+            terrainRegions.save(new TerrainRegion("middle-earth", "middle-earth",
+                "Mordor Plateau " + (index + 1), "volcanic", brushSizes[index], points));
+        }
     }
 
     private MapSeedData readMapSeedData() throws IOException {
@@ -145,22 +212,22 @@ public class CampaignDataSeeder implements CommandLineRunner {
         ));
     }
 
-    private void seedMiddleEarthEvents(Campaign campaign) {
+    private void seedMiddleEarthEvents(Campaign campaign, List<PlaceSeed> seedPlaces) {
         if (!events.findByCampaign_Id(campaign.getId()).isEmpty()) return;
         events.saveAll(List.of(
-            event(campaign, 1, "The Ring leaves the Shire", "Frodo sets out from home with Sam, Merry, and Pippin.", "Hobbiton", 24, 35),
-            event(campaign, 2, "The hobbits meet Strider", "At the Prancing Pony, Aragorn joins the journey as their guide.", "Bree", 34, 40),
-            event(campaign, 3, "The attack at Weathertop", "The Black Riders find the travelers on the ancient hill.", "Weathertop", 39, 36),
-            event(campaign, 4, "The Council of Elrond", "The Ring’s fate is decided and the Fellowship is formed.", "Rivendell", 48, 32),
-            event(campaign, 5, "The Fellowship crosses Moria", "Gandalf falls while holding the Balrog at the Bridge of Khazad-dûm.", "Moria", 45, 47),
-            event(campaign, 6, "The Fellowship rests in Lothlórien", "Galadriel gives the company counsel and gifts for the road.", "Lothlórien", 58, 44),
-            event(campaign, 7, "The Fellowship is broken", "The company scatters; Frodo and Sam continue toward Mordor.", "Amon Hen", 62, 51),
-            event(campaign, 8, "The Battle of the Hornburg", "Rohan withstands Saruman’s assault at Helm’s Deep.", "Helm’s Deep", 46, 68),
-            event(campaign, 9, "The Ents take Isengard", "Treebeard and the Ents break Saruman’s hold over the tower.", "Isengard", 44, 60),
-            event(campaign, 10, "The Battle of the Pelennor Fields", "The armies of Gondor and Rohan break the siege of Minas Tirith.", "Pelennor Fields", 61, 79),
-            event(campaign, 11, "The march on the Black Gate", "The West draws Sauron’s attention away from the Ring-bearers.", "Black Gate", 74, 61),
-            event(campaign, 12, "The Ring is destroyed", "The Ring reaches the Cracks of Doom and Sauron’s power falls.", "Mount Doom", 83, 67),
-            event(campaign, 13, "The Ring-bearers depart", "Frodo and the Keepers of the Rings sail from Middle-earth.", "Grey Havens", 15, 23)
+            event(campaign, 1, "The Ring leaves the Shire", "Frodo sets out from home with Sam, Merry, and Pippin.", "Hobbiton", seedPlaces),
+            event(campaign, 2, "The hobbits meet Strider", "At the Prancing Pony, Aragorn joins the journey as their guide.", "Bree", seedPlaces),
+            event(campaign, 3, "The attack at Weathertop", "The Black Riders find the travelers on the ancient hill.", "Weathertop", seedPlaces),
+            event(campaign, 4, "The Council of Elrond", "The Ring’s fate is decided and the Fellowship is formed.", "Rivendell", seedPlaces),
+            event(campaign, 5, "The Fellowship crosses Moria", "Gandalf falls while holding the Balrog at the Bridge of Khazad-dûm.", "Moria", seedPlaces),
+            event(campaign, 6, "The Fellowship rests in Lothlórien", "Galadriel gives the company counsel and gifts for the road.", "Lothlórien", seedPlaces),
+            event(campaign, 7, "The Fellowship is broken", "The company scatters; Frodo and Sam continue toward Mordor.", "Amon Hen", seedPlaces),
+            event(campaign, 8, "The Battle of the Hornburg", "Rohan withstands Saruman’s assault at Helm’s Deep.", "Helm’s Deep", seedPlaces),
+            event(campaign, 9, "The Ents take Isengard", "Treebeard and the Ents break Saruman’s hold over the tower.", "Isengard", seedPlaces),
+            event(campaign, 10, "The Battle of the Pelennor Fields", "The armies of Gondor and Rohan break the siege of Minas Tirith.", "Pelennor Fields", seedPlaces),
+            event(campaign, 11, "The march on the Black Gate", "The West draws Sauron’s attention away from the Ring-bearers.", "Black Gate", seedPlaces),
+            event(campaign, 12, "The Ring is destroyed", "The Ring reaches the Cracks of Doom and Sauron’s power falls.", "Mount Doom", seedPlaces),
+            event(campaign, 13, "The Ring-bearers depart", "Frodo and the Keepers of the Rings sail from Middle-earth.", "Grey Havens", seedPlaces)
         ));
     }
 
@@ -171,11 +238,15 @@ public class CampaignDataSeeder implements CommandLineRunner {
     }
 
     private static CampaignEvent event(Campaign campaign, int number, String title,
-                                       String description, String placeName, double x, double y) {
-        return new CampaignEvent(campaign, number, title, description, placeName, null, x, y);
+                                       String description, String placeName, List<PlaceSeed> seedPlaces) {
+        PlaceSeed place = seedPlaces.stream().filter(seed -> seed.name().equals(placeName)).findFirst()
+            .orElseThrow(() -> new IllegalStateException("Event place is not seeded: " + placeName));
+        return new CampaignEvent(campaign, number, title, description, placeName, null, place.x(), place.y());
     }
 
     private record MapSeedData(Map<String, String> alternateNames, List<PlaceSeed> tilePlaces,
-                               List<PlaceSeed> middleEarthPlaces) {}
+                               List<PlaceSeed> middleEarthPlaces,
+                               List<PlaceCorrection> middleEarthPlaceCorrections) {}
+    private record PlaceCorrection(String name, double fromX, double fromY) {}
     private record PlaceSeed(String name, double x, double y, int tier, String kind) {}
 }

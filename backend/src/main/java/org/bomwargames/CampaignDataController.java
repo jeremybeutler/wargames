@@ -457,7 +457,7 @@ public class CampaignDataController {
         @NotBlank @Pattern(regexp = "^(ces|middle-earth)$") String mapKey,
         @NotBlank @Pattern(regexp = "^(tiles|artwork|middle-earth)$") String mapLayer,
         @NotBlank @Size(max = 100) String name,
-        @NotBlank @Pattern(regexp = "^(mountain|river|forest|other)$") String terrainType,
+        @NotBlank @Pattern(regexp = "^(mountain|river|forest|volcanic|other)$") String terrainType,
         @NotNull @DecimalMin("0.5") @DecimalMax("15.0") Double brushSize,
         @NotEmpty @Size(max = 2000) List<@Valid TerrainPointRequest> points
     ) {}

@@ -1,3 +1,5 @@
+assets/
+
 frontend/node_modules
 frontend/dist/
 frontend/.vite/
@@ -31,3 +33,6 @@ backend/data/*.trace.db
 *.iml
 .DS_Store
 Thumbs.db
+# Launcher logs
+backend/data/*.log
+backend/data/*.log.err
