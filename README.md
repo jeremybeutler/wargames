@@ -144,6 +144,30 @@ also listens on the local network for phone testing. For that local test, open
 the host page using Vite's printed **Network** URL rather than `localhost`, so
 the copied join link points to an address the phone can reach.
 
+## Terrain strokes
+
+Movement costs come from the terrain strokes stored in the database, not from
+the map picture. `terrain/middle-earth.json` holds a full set generated from
+the Middle-earth map art (forest, mountains, rivers, and Mordor's volcanic
+plain). Regenerate it after changing the map art:
+
+```sh
+pip install pillow numpy scipy scikit-image
+python scripts/generate_terrain.py --preview terrain/preview.png
+```
+
+Load it into a running game, local or live, with the map editor token. The
+script first saves the game's current strokes to `terrain/backups/` and
+prints the command to undo:
+
+```powershell
+.\scripts\import-terrain.ps1 -Url https://wargames.onrender.com
+```
+
+`-Append` adds strokes instead of replacing them; `-File` imports another
+file, such as a backup. The script calls `POST /api/terrain-regions/import`
+(`?replace=false` to append), which takes the same JSON format.
+
 ## Map editor access
 
 The map editor requires a separate administrator token. Set `MAP_EDITOR_TOKEN`

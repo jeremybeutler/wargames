@@ -18,3 +18,7 @@ services:
         sync: false
       - key: DATABASE_PASSWORD
         sync: false
+      # Turns on map editing and terrain import (scripts/import-terrain.ps1).
+      # Render generates a random value; copy it from the service's Environment page.
+      - key: MAP_EDITOR_TOKEN
+        generateValue: true

@@ -307,6 +307,32 @@ public class CampaignDataController {
         return view(terrainRegions.save(region));
     }
 
+    /**
+     * Loads a whole map's terrain in one transaction, e.g. into the live app with
+     * scripts/import-terrain.ps1. By default it first removes that map's existing strokes,
+     * so the result matches the file exactly. Needs the map editor token like other writes.
+     */
+    @PostMapping("/terrain-regions/import")
+    @Transactional
+    public TerrainImportResult importTerrainRegions(@Valid @RequestBody TerrainImportRequest request,
+                                                    @RequestParam(defaultValue = "true") boolean replace) {
+        validateTerrainMap(request.mapKey(), request.mapLayer());
+        int removed = 0;
+        if (replace) {
+            List<TerrainRegion> existing =
+                terrainRegions.findByMapKeyAndMapLayerOrderByIdAsc(request.mapKey(), request.mapLayer());
+            removed = existing.size();
+            terrainRegions.deleteAll(existing);
+            terrainRegions.flush();
+        }
+        List<TerrainRegion> imported = request.regions().stream()
+            .map(region -> new TerrainRegion(request.mapKey(), request.mapLayer(), region.name(),
+                region.terrainType(), region.brushSize(), terrainPoints(region.points())))
+            .toList();
+        terrainRegions.saveAll(imported);
+        return new TerrainImportResult(request.mapKey(), request.mapLayer(), removed, imported.size());
+    }
+
     @DeleteMapping("/terrain-regions/{id}")
     public ResponseEntity<Void> deleteTerrainRegion(@PathVariable Long id) {
         terrainRegions.delete(requireTerrainRegion(id));
@@ -461,6 +487,21 @@ public class CampaignDataController {
         @NotNull @DecimalMin("0.5") @DecimalMax("15.0") Double brushSize,
         @NotEmpty @Size(max = 2000) List<@Valid TerrainPointRequest> points
     ) {}
+
+    public record TerrainImportRequest(
+        @NotBlank @Pattern(regexp = "^(ces|middle-earth)$") String mapKey,
+        @NotBlank @Pattern(regexp = "^(tiles|artwork|middle-earth)$") String mapLayer,
+        @NotNull @Size(max = 20000) List<@Valid TerrainImportRegion> regions
+    ) {}
+
+    public record TerrainImportRegion(
+        @NotBlank @Size(max = 100) String name,
+        @NotBlank @Pattern(regexp = "^(mountain|river|forest|volcanic|other)$") String terrainType,
+        @NotNull @DecimalMin("0.5") @DecimalMax("15.0") Double brushSize,
+        @NotEmpty @Size(max = 2000) List<@Valid TerrainPointRequest> points
+    ) {}
+
+    public record TerrainImportResult(String mapKey, String mapLayer, int removed, int imported) {}
 
     public record TerrainPointRequest(
         @NotNull @DecimalMin("0.0") @DecimalMax("100.0") Double x,

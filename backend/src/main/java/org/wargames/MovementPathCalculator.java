@@ -32,7 +32,7 @@ final class MovementPathCalculator {
         Map<Terrain, List<Interval>> coverage = new HashMap<>();
         List<Interval> riverCoverage = new ArrayList<>();
         List<Interval> riverTravel = new ArrayList<>();
-        List<Double> riverIntersections = new ArrayList<>();
+        List<Crossing> riverIntersections = new ArrayList<>();
         Point doom = mapPoint(mountDoomX, mountDoomY);
         Interval mountDoom = circleInterval(start, end, doom, MAP_WIDTH * 0.005);
         if (mountDoom != null) addIntervals(coverage, Terrain.MOUNT_DOOM, List.of(mountDoom));
@@ -53,7 +53,9 @@ final class MovementPathCalculator {
                         riverTravel.addAll(intervals);
                     } else {
                         Double intersection = intersectionParameter(start, end, segmentStart, segmentEnd);
-                        if (intersection != null) riverIntersections.add(intersection);
+                        if (intersection != null) {
+                            riverIntersections.add(new Crossing(intersection, radius / pathLength));
+                        }
                     }
                 } else {
                     addIntervals(coverage, terrain, intervals);
@@ -153,14 +155,23 @@ final class MovementPathCalculator {
         }
     }
 
-    private static int countRiverCrossings(List<Double> intersections, List<Interval> riverCoverage,
+    /**
+     * Counts places where the path cuts across a river line. A cut only counts as travel along
+     * the river (and so is free) when the path keeps following the river for at least the
+     * stroke's radius on both sides of it; otherwise a bend in the river right next to the
+     * crossing point would hide the crossing.
+     */
+    private static int countRiverCrossings(List<Crossing> intersections, List<Interval> riverCoverage,
                                            List<Interval> riverTravel) {
-        intersections.sort(Comparator.naturalOrder());
+        intersections.sort(Comparator.comparingDouble(Crossing::parameter));
         int count = 0;
         double previous = Double.NEGATIVE_INFINITY;
-        for (double intersection : intersections) {
+        for (Crossing crossing : intersections) {
+            double intersection = crossing.parameter();
+            double reach = crossing.radiusParameter();
             boolean travelingAlongRiver = riverTravel.stream().anyMatch(interval ->
-                intersection >= interval.start - 1e-6 && intersection <= interval.end + 1e-6);
+                interval.start <= Math.max(0, intersection - reach) + 1e-6
+                    && interval.end >= Math.min(1, intersection + reach) - 1e-6);
             if (travelingAlongRiver || riverCoverage.stream().noneMatch(interval ->
                     intersection >= interval.start - 1e-6 && intersection <= interval.end + 1e-6)) {
                 continue;
@@ -338,6 +349,9 @@ final class MovementPathCalculator {
     private record Point(double x, double y) {}
 
     private record Interval(double start, double end) {}
+
+    /** Where the path cuts a river line (0..1 along the path) and that stroke's radius in the same units. */
+    private record Crossing(double parameter, double radiusParameter) {}
 
     private enum Terrain {
         MOUNT_DOOM("mount-doom", 6, 0),

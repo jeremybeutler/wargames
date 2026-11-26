@@ -36,3 +36,6 @@ Thumbs.db
 # Launcher logs
 backend/data/*.log
 backend/data/*.log.err
+
+# Terrain backups made by scripts/import-terrain.ps1
+terrain/backups/

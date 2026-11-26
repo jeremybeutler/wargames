@@ -33,6 +33,18 @@ class MovementPathCalculatorTest {
     }
 
     @Test
+    void stillCountsACrossingWhereTheRiverBendsAlongThePath() {
+        // The river comes down, then bends to run beside the path just past the crossing.
+        TerrainRegion river = region("river", 2,
+            point(50, 30), point(50, 50.5), point(53, 51.2), point(56, 51.6));
+
+        MovementPathCalculator.Result result = MovementPathCalculator.calculate(
+            10, 50, 90, 50, 1000, 83, 67, List.of(river));
+
+        assertEquals(1, result.riverCrossings());
+    }
+
+    @Test
     void usesTheFixedRiverRateWhenTravelingAlongARiverStroke() {
         TerrainRegion river = region("river", 2, point(40, 50), point(60, 50));
 
