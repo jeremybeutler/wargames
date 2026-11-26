@@ -20,6 +20,12 @@ public class GameSession {
     @Column(nullable = false)
     private String state;
 
+    /** Which game the state belongs to: null for War of the Ring (and rows saved before this), or IRON_THRONE. */
+    @Column(length = 20)
+    private String gameType;
+
+    public static final String IRON_THRONE = "iron-throne";
+
     protected GameSession() {}
 
     public GameSession(String code, String state) {
@@ -27,7 +33,13 @@ public class GameSession {
         this.state = state;
     }
 
+    public GameSession(String code, String state, String gameType) {
+        this(code, state);
+        this.gameType = gameType;
+    }
+
     public String getCode() { return code; }
+    public String getGameType() { return gameType; }
     public String getState() { return state; }
     public void setState(String state) { this.state = state; }
 }

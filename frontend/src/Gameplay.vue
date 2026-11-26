@@ -1,7 +1,8 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import QRCode from 'qrcode'
 
-const emit = defineEmits(['open-map-editor'])
+const emit = defineEmits(['open-map-editor', 'open-thrones'])
 const roster = [
   { id: 'frodo', name: 'Frodo', team: 'Free Peoples', army: 'Hobbits', units: 1, start: 'Hobbiton', initial: 'F' },
   { id: 'theoden', name: 'Théoden', team: 'Free Peoples', army: 'Riders of Rohan', units: 2, start: 'Edoras', initial: 'T' },
@@ -9,7 +10,42 @@ const roster = [
   { id: 'khamul', name: 'Khamûl', team: "Sauron's Forces", army: 'Easterlings', units: 1, start: 'Rhûn', initial: 'K' },
   { id: 'saruman', name: 'Saruman', team: "Sauron's Forces", army: 'Uruk-hai', units: 2, start: 'Isengard', initial: 'Sm' },
   { id: 'sauron', name: 'Sauron', team: "Sauron's Forces", army: 'Orcs', units: 3, start: 'Barad-dûr', initial: 'S' },
+  // The 8-player expansion
+  { id: 'elves', name: 'Galadriel', team: 'Free Peoples', army: 'Elves', units: 2, start: 'Lothlórien', initial: 'G', expansion: true },
+  { id: 'witchking', name: 'Witch-king', team: "Sauron's Forces", army: 'Ringwraiths', units: 2, start: 'Minas Morgul', initial: 'W', expansion: true },
 ]
+// Leaders a party may be represented by (first is the default), and their map initials.
+const representatives = {
+  frodo: ['Frodo', 'Sam', 'Merry', 'Pippin'],
+  theoden: ['Théoden', 'Éowyn', 'Éomer'],
+  aragorn: ['Aragorn', 'Gandalf', 'Gimli'],
+  elves: ['Galadriel', 'Legolas', 'Arwen'],
+}
+const leaderInitials = {
+  Frodo: 'F', Sam: 'Sa', Merry: 'M', Pippin: 'P', 'Théoden': 'T', 'Éowyn': 'Éw', 'Éomer': 'Ém',
+  Aragorn: 'A', Gandalf: 'Gd', Gimli: 'Gi', Galadriel: 'G', Legolas: 'L', Arwen: 'Ar', 'Khamûl': 'K', Saruman: 'Sm',
+  Sauron: 'S', 'Witch-king': 'W',
+}
+// Optional character portraits: frontend/public/portraits/<name>.webp (e.g. witch-king.webp,
+// made by scripts/make_portraits.py). A missing file falls back to the initials, and isn't
+// requested again.
+const missingPortraits = ref(new Set())
+function portraitSlug(name) {
+  return (name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+}
+function portraitUrl(name) {
+  return `/portraits/${portraitSlug(name)}.webp`
+}
+function hasPortrait(name) {
+  return Boolean(name) && !missingPortraits.value.has(portraitSlug(name))
+}
+function markPortraitMissing(name) {
+  missingPortraits.value = new Set([...missingPortraits.value, portraitSlug(name)])
+}
+function partyInitial(party) {
+  return leaderInitials[party?.name] || roster.find(item => item.id === party?.id)?.initial || party?.name?.[0] || '?'
+}
 const scaleRatio = 887 / 1774
 const currentView = ref('home')
 const joinCode = ref('')
@@ -17,6 +53,17 @@ const code = ref('')
 const playerName = ref('')
 const hostName = ref('')
 const mapWidthMiles = ref(1000)
+const playerCount = ref(6)
+const hostRoster = computed(() => roster.filter(party => !party.expansion || playerCount.value === 8))
+const rulesOpen = ref(false)
+function closeRulesOnEscape(event) {
+  if (event.key === 'Escape') rulesOpen.value = false
+}
+watch(rulesOpen, open => {
+  if (open) window.addEventListener('keydown', closeRulesOnEscape)
+  else window.removeEventListener('keydown', closeRulesOnEscape)
+})
+const selectedRepresentative = ref('')
 const game = ref(null)
 const mapPlaces = ref([])
 const savedSessions = ref([])
@@ -37,7 +84,28 @@ const MIN_MAP_ZOOM = 1
 const MAX_MAP_ZOOM = 4
 const mapZoom = ref(1)
 const mapPan = ref({ x: 0, y: 0 })
+// True only while a drag, pinch or wheel zoom is in progress. The map is promoted to its own
+// GPU layer just for that (smooth motion), then dropped so the browser redraws it sharply at
+// the new zoom instead of stretching the bitmap it painted at 100%.
+const mapGesturing = ref(false)
+let mapGestureTimer = 0
+function holdMapGesture(ms = 180) {
+  mapGesturing.value = true
+  window.clearTimeout(mapGestureTimer)
+  mapGestureTimer = window.setTimeout(() => {
+    if (!mapPointers.size) mapGesturing.value = false
+  }, ms)
+}
 const selectedMarkerId = ref('')
+// Phone-sized screens get a single map-first layout with an action dock.
+const compactQuery = typeof window !== 'undefined' && window.matchMedia
+  ? window.matchMedia('(max-width: 760px)') : null
+const isCompact = ref(Boolean(compactQuery?.matches))
+const mobileDetailsOpen = ref(false)
+function onCompactChange(event) {
+  isCompact.value = event.matches
+  if (!event.matches) mobileDetailsOpen.value = false
+}
 let pollTimer = null
 let pollInFlight = false
 let previewRequestId = 0
@@ -56,12 +124,16 @@ const hostObjectivePlaces = computed(() =>
     { name: 'Rhûn', place: 'Rhûn', owner: "Sauron's Forces" },
     { name: 'Mordor', place: 'Barad-dûr', owner: "Sauron's Forces" },
     { name: 'Isengard', place: 'Isengard', owner: "Sauron's Forces" },
+    ...(playerCount.value === 8 ? [
+      { name: 'Lothlórien', place: 'Lothlórien', owner: 'Free Peoples' },
+      { name: 'Minas Morgul', place: 'Minas Morgul', owner: "Sauron's Forces" },
+    ] : []),
   ].map(objective => {
     const place = mappedPlace(objective.place)
     return place ? { ...place, objectiveName: objective.name } : null
   }).filter(Boolean))
 const hostMapMarkers = computed(() => tileMapMarkers([
-  ...roster.map(party => {
+  ...hostRoster.value.map(party => {
     const place = hostPartyPlace(party)
     return place ? {
       id: party.id,
@@ -134,6 +206,15 @@ const visibleDetailPlaces = computed(() =>
       || (place.tier >= 2 && mapZoom.value >= 2.25)))
 const currentPosition = computed(() =>
   ownParty.value && mapPlaces.value.find(place => place.name === closestPlace(ownParty.value.x, ownParty.value.y)))
+// "Near X" unless the party is actually at the place, so the nearest name doesn't read as arrival.
+const positionLabel = computed(() => {
+  const party = ownParty.value
+  if (!party || party.x === null) return ''
+  if (game.value && atMountDoom.value) return 'Mount Doom'
+  const place = currentPosition.value
+  if (!place) return `${party.x.toFixed(1)}, ${party.y.toFixed(1)}`
+  return sameMapPoint(party.x, party.y, place.x, place.y) ? place.name : `Near ${place.name}`
+})
 const contactTargets = computed(() => {
   if (!ownParty.value || !isMyTurn.value) return []
   const defenders = visibleParties.value.filter(party =>
@@ -142,27 +223,86 @@ const contactTargets = computed(() => {
     return defenders.map(party => ({
       id: party.id,
       label: `${party.name} · ${party.army}`,
-      armorClass: party.armorClass,
+      name: party.name,
+      defenseDice: defenseDice(party),
       kind: 'party',
     }))
   }
   return (game.value?.objectives || [])
     .filter(city => city.owner !== ownParty.value.team
       && sameMapPoint(ownParty.value.x, ownParty.value.y, city.x, city.y))
-    .map(city => ({ id: city.id, label: city.name, armorClass: city.armorClass, kind: 'city' }))
+    .map(city => ({
+      id: city.id,
+      label: `${city.name} · garrison ${garrison(city)}`,
+      name: city.name,
+      defenseDice: Math.max(1, city.units ?? 0),
+      kind: 'city',
+    }))
 })
 const canMove = computed(() =>
   isMyTurn.value && !ownParty.value.moved && !ownParty.value.attacked)
+const lastBattleSummary = computed(() => {
+  const battle = game.value?.lastBattle
+  if (!battle) return ''
+  return battleOutcome(battle)
+})
+
+/** A stronghold's garrison, e.g. "4 / 6"; older saved games have none. */
+function garrison(city) {
+  return `${city.units ?? 0} / ${city.initialUnits ?? 0}`
+}
+
+// Mount Doom is a small area (the server sends its radius), not a single point.
+const mountDoomReach = computed(() => game.value?.mountDoomReach ?? 2.5)
 const atMountDoom = computed(() =>
-  Boolean(ownParty.value && game.value
-    && sameMapPoint(ownParty.value.x, ownParty.value.y, game.value.mountDoomX, game.value.mountDoomY)))
+  Boolean(ownParty.value && game.value && ownParty.value.x !== null
+    && Math.hypot(ownParty.value.x - game.value.mountDoomX,
+      (ownParty.value.y - game.value.mountDoomY) * scaleRatio) <= mountDoomReach.value))
+const milesFromMountDoom = computed(() => {
+  if (!ownParty.value || !game.value || ownParty.value.x === null) return null
+  const miles = game.value.mapWidthMiles / 100
+  return Math.hypot((ownParty.value.x - game.value.mountDoomX) * miles,
+    (ownParty.value.y - game.value.mountDoomY) * miles * scaleRatio)
+})
 const canDestroyRing = computed(() =>
   Boolean(ownParty.value?.id === 'frodo' && game.value?.ringHolder === 'frodo'
     && atMountDoom.value && isMyTurn.value && !game.value.winner))
 const playMapWorldStyle = computed(() => ({
   transform: `translate(${mapPan.value.x}px, ${mapPan.value.y}px) scale(${mapZoom.value})`,
+  '--marker-scale': 1 / mapZoom.value,
 }))
-const selectedSeatData = computed(() => roster.find(party => party.id === selectedSeat.value))
+const selectedSeatData = computed(() =>
+  (game.value?.seats || []).find(seat => seat.id === selectedSeat.value) || null)
+watch(selectedSeat, id => {
+  const seat = (game.value?.seats || []).find(item => item.id === id)
+  selectedRepresentative.value = seat?.representatives?.[0] || seat?.name || ''
+})
+// Whoever carries the Ring for the Hobbits (Frodo, or the player's chosen hobbit).
+const ringBearerName = computed(() =>
+  game.value?.parties.find(party => party.id === 'frodo')?.name || 'Frodo')
+/** The leader shown for a seat: the one being picked on this device, else the seat's own. */
+function seatLeader(seat) {
+  return seat.id === selectedSeat.value && !seat.connected && selectedRepresentative.value
+    ? selectedRepresentative.value : seat.name
+}
+const seatCount = computed(() => game.value?.seats?.length || 6)
+const teamUnits = computed(() =>
+  (game.value?.seats || []).filter(seat => seat.team === 'Free Peoples')
+    .reduce((sum, seat) => sum + seat.initialUnits, 0))
+
+// One die per army unit; a leader standing alone still rolls one.
+function partyDice(party) {
+  if (party?.units === null || party?.units === undefined) return null
+  return Math.max(1, party.units)
+}
+
+function attackDice(party) {
+  return partyDice(party)
+}
+
+function defenseDice(party) {
+  return partyDice(party)
+}
 
 function sameMapPoint(x1, y1, x2, y2) {
   return x1 !== null && y1 !== null && x2 !== null && y2 !== null
@@ -178,10 +318,13 @@ function closestPlace(x, y) {
 }
 
 function tileMapMarkers(markers) {
+  // Icons keep the same on-screen size at every zoom, so their spacing shrinks in map units.
+  const spacing = (isCompact.value ? 24 : 36) / mapZoom.value
+  const clusterRadius = (isCompact.value ? 2.4 : 4.2) / mapZoom.value
   const clusters = []
   for (const marker of markers) {
     const cluster = clusters.find(items => items.some(item =>
-      Math.hypot(marker.x - item.x, (marker.y - item.y) * scaleRatio) < 4.2))
+      Math.hypot(marker.x - item.x, (marker.y - item.y) * scaleRatio) < clusterRadius))
     if (cluster) cluster.push(marker)
     else clusters.push([marker])
   }
@@ -195,8 +338,8 @@ function tileMapMarkers(markers) {
       const row = Math.floor(index / columns)
       const rowLength = Math.min(columns, cluster.length - row * columns)
       const column = index % columns
-      const offsetX = (column - (rowLength - 1) / 2) * 36
-      const offsetY = (row - (rows - 1) / 2) * 36
+      const offsetX = (column - (rowLength - 1) / 2) * spacing
+      const offsetY = (row - (rows - 1) / 2) * spacing
       return {
         ...marker,
         style: {
@@ -256,10 +399,21 @@ function refreshSavedSessions() {
 
 function setGameAddress(gameCode, seatId) {
   const url = new URL(window.location.href)
-  url.searchParams.delete('view')
+  // Quick test parameters are used once; a reload just reopens the seat.
+  for (const key of ['view', 'quicktest', 'group', 'players', 'start', 'leader']) url.searchParams.delete(key)
   url.searchParams.set('game', gameCode)
   url.searchParams.set('seat', seatId)
   window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
+}
+
+// Quick test games (scripts/test-game.ps1) never appear in the home screen's saved games.
+const QUICK_TEST_GAMES_KEY = 'wargames:quicktest-games'
+function isQuickTestGame(gameCode) {
+  try {
+    return JSON.parse(window.localStorage.getItem(QUICK_TEST_GAMES_KEY) || '[]').includes(gameCode)
+  } catch {
+    return false
+  }
 }
 
 function seatOf(gameView) {
@@ -270,8 +424,10 @@ function seatOf(gameView) {
 function rememberGameSession(gameView, { activate = true } = {}) {
   const seatId = seatOf(gameView)
   if (!seatId) return
-  const seats = readSavedSeats().filter(seat => !(seat.code === gameView.code && seat.seatId === seatId))
-  writeSavedSeats([...seats, { code: gameView.code, seatId }])
+  if (!isQuickTestGame(gameView.code)) {
+    const seats = readSavedSeats().filter(seat => !(seat.code === gameView.code && seat.seatId === seatId))
+    writeSavedSeats([...seats, { code: gameView.code, seatId }])
+  }
   if (!activate) return
   currentSeat.value = seatId
   try {
@@ -358,7 +514,7 @@ async function hostGame() {
   try {
     const response = await apiRequest('/api/games', {
       method: 'POST',
-      body: JSON.stringify({ playerName: hostName.value, mapWidthMiles: mapWidthMiles.value }),
+      body: JSON.stringify({ playerName: hostName.value, mapWidthMiles: mapWidthMiles.value, players: playerCount.value }),
     })
     saveGame(response)
   } catch (requestError) {
@@ -373,7 +529,14 @@ async function findGame() {
   notice.value = ''
   isSubmitting.value = true
   try {
-    const room = await apiRequest(`/api/games/${encodeURIComponent(joinCode.value.trim().toUpperCase())}`)
+    const wanted = joinCode.value.trim().toUpperCase()
+    // One Join box serves every campaign: Iron Throne codes open that game instead.
+    const lookup = await apiRequest(`/api/game-codes/${encodeURIComponent(wanted)}`)
+    if (lookup.type === 'iron-throne') {
+      emit('open-thrones', wanted)
+      return
+    }
+    const room = await apiRequest(`/api/games/${encodeURIComponent(wanted)}`)
     if (room.status !== 'lobby') throw new Error('This campaign has already started.')
     game.value = room
     code.value = room.code
@@ -395,7 +558,11 @@ async function joinSeat() {
   try {
     const response = await apiRequest(`/api/games/${encodeURIComponent(code.value)}/join`, {
       method: 'POST',
-      body: JSON.stringify({ playerName: playerName.value, characterId: selectedSeat.value }),
+      body: JSON.stringify({
+        playerName: playerName.value,
+        characterId: selectedSeat.value,
+        representative: selectedRepresentative.value || null,
+      }),
     })
     saveGame(response)
   } catch (requestError) {
@@ -467,7 +634,7 @@ async function submitAction(action, body) {
     const previousEventCount = game.value?.events.length ?? 0
     game.value = response
     notice.value = ''
-    if (['attack', 'destroy-ring'].includes(action)) {
+    if (action === 'destroy-ring') {
       const newEvents = response.events.slice(previousEventCount)
       notice.value = newEvents.join(' ') || response.events[response.events.length - 1] || 'Action resolved.'
     }
@@ -496,7 +663,11 @@ async function updateMovementPreview(point) {
         body: JSON.stringify({ characterId: ownParty.value.id, x: point.x, y: point.y }),
       },
     )
-    if (requestId === previewRequestId) movementPreview.value = preview
+    if (requestId === previewRequestId) {
+      movementPreview.value = preview
+      // The server may move the destination (e.g. onto Mount Doom's summit); show where it lands.
+      if (typeof preview.x === 'number') destination.value = { x: preview.x, y: preview.y }
+    }
   } catch (requestError) {
     if (requestId === previewRequestId) error.value = requestError.message
   } finally {
@@ -509,7 +680,31 @@ function startMove() {
   movementMode.value = true
   destination.value = null
   movementPreview.value = null
-  notice.value = 'Tap a destination on the map, then confirm the move.'
+  // On phones the action dock says this; a banner would only cover the map.
+  if (!isCompact.value) notice.value = 'Tap a destination on the map, then confirm the move.'
+}
+
+function cancelMove() {
+  movementMode.value = false
+  destination.value = null
+  movementPreview.value = null
+  notice.value = ''
+}
+
+async function confirmMove() {
+  if (!ownParty.value || !destination.value) return
+  await submitAction('move', { characterId: ownParty.value.id, x: destination.value.x, y: destination.value.y })
+}
+
+/** Pans so this device's party sits in the middle of the map stage. */
+function centerOnOwnParty() {
+  const party = ownParty.value
+  const world = mapWorld.value
+  if (!party || party.x === null || !world) return
+  mapPan.value = clampMapPan({
+    x: (0.5 - party.x / 100) * world.offsetWidth * mapZoom.value,
+    y: (0.5 - party.y / 100) * world.offsetHeight * mapZoom.value,
+  })
 }
 
 function selectDestination(event) {
@@ -603,6 +798,7 @@ function onMapPointerDown(event) {
   if ((event.pointerType === 'mouse' && event.button !== 0)
       || event.target.closest?.('.map-zoom-controls, .map-icon-marker')) return
   mapPointers.set(event.pointerId, { x: event.clientX, y: event.clientY })
+  mapGesturing.value = true
   try {
     event.currentTarget.setPointerCapture(event.pointerId)
   } catch {
@@ -640,6 +836,7 @@ function onMapPointerMove(event) {
 function onMapPointerUp(event) {
   if (!mapPointers.has(event.pointerId)) return
   mapPointers.delete(event.pointerId)
+  if (!mapPointers.size) holdMapGesture(120)
   if (mapPinch) {
     // A pinch never selects a destination, including when one finger stays down.
     suppressNextMapClick()
@@ -659,6 +856,7 @@ function onMapPointerUp(event) {
 
 function onMapWheel(event) {
   if (!mapStage.value) return
+  holdMapGesture()
   zoomMapAround(mapZoom.value + (event.deltaY < 0 ? 0.25 : -0.25),
     stageOffset(event.clientX, event.clientY))
 }
@@ -673,7 +871,63 @@ function resetMapStageScroll(event) {
 
 function onWindowResize() {
   mapPan.value = clampMapPan(mapPan.value)
+  mapViewportTick.value += 1
 }
+
+// Zoomed-in detail: an AI-upscaled 8192 x 4096 copy of the map, cut into 8 x 4 tiles
+// (scripts/make_map_tiles.py). Only the tiles in view are loaded, and only once the
+// 4096-px base map would be stretched on this screen.
+const MAP_BASE_WIDTH = 4096
+const HD_WIDTH = 8192
+const HD_HEIGHT = 4096
+const HD_COLS = 8
+const HD_ROWS = 4
+const HD_BLEED = 2
+const mapViewportTick = ref(0)
+const hdTiles = computed(() => {
+  void mapViewportTick.value
+  const stage = mapStage.value
+  const world = mapWorld.value
+  if (!stage || !world || !world.offsetWidth) return []
+  const zoom = mapZoom.value
+  const width = world.offsetWidth
+  const height = world.offsetHeight
+  if (width * zoom * (window.devicePixelRatio || 1) <= MAP_BASE_WIDTH * 1.1) return []
+  // The world is centered in the stage and scaled about its center, so a stage-center
+  // offset o shows world point size/2 + (o - pan) / zoom.
+  const pan = mapPan.value
+  const view = {
+    left: (width / 2 + (-stage.clientWidth / 2 - pan.x) / zoom) / width,
+    right: (width / 2 + (stage.clientWidth / 2 - pan.x) / zoom) / width,
+    top: (height / 2 + (-stage.clientHeight / 2 - pan.y) / zoom) / height,
+    bottom: (height / 2 + (stage.clientHeight / 2 - pan.y) / zoom) / height,
+  }
+  const tileWidth = HD_WIDTH / HD_COLS
+  const tileHeight = HD_HEIGHT / HD_ROWS
+  const tiles = []
+  for (let row = 0; row < HD_ROWS; row += 1) {
+    for (let col = 0; col < HD_COLS; col += 1) {
+      // Load a quarter tile ahead so a short pan doesn't reveal the soft base map.
+      if ((col + 1.25) / HD_COLS < view.left || (col - 0.25) / HD_COLS > view.right
+        || (row + 1.25) / HD_ROWS < view.top || (row - 0.25) / HD_ROWS > view.bottom) continue
+      const x0 = Math.max(0, col * tileWidth - HD_BLEED)
+      const y0 = Math.max(0, row * tileHeight - HD_BLEED)
+      const x1 = Math.min(HD_WIDTH, (col + 1) * tileWidth + HD_BLEED)
+      const y1 = Math.min(HD_HEIGHT, (row + 1) * tileHeight + HD_BLEED)
+      tiles.push({
+        key: `${row}-${col}`,
+        src: `/map-assets/middle-earth/hd/${row}-${col}.webp`,
+        style: {
+          left: `${x0 / HD_WIDTH * 100}%`,
+          top: `${y0 / HD_HEIGHT * 100}%`,
+          width: `${(x1 - x0) / HD_WIDTH * 100}%`,
+          height: `${(y1 - y0) / HD_HEIGHT * 100}%`,
+        },
+      })
+    }
+  }
+  return tiles
+})
 
 function toggleMapMarker(marker) {
   if (movementMode.value) {
@@ -788,11 +1042,462 @@ function hostPartyPlace(party) {
   return mappedPlace(party.start)
 }
 
+// Battle overlay: every new battle (yours or anyone's, picked up by polling) plays out as
+// tumbling dice that settle, then the two totals are compared.
+const battleOverlay = ref(null)
+let seenBattleGame = ''
+let seenBattleId = null
+let battleTimers = []
+let battleCloseTimer = 0
+
+function clearBattleTimers() {
+  battleTimers.forEach(timer => { window.clearTimeout(timer); window.clearInterval(timer) })
+  battleTimers = []
+  window.clearTimeout(battleCloseTimer)
+}
+
+function randomFace() {
+  return 1 + Math.floor(Math.random() * 6)
+}
+
+function playBattle(log) {
+  clearBattleTimers()
+  battleOverlay.value = {
+    log,
+    phase: 'rolling',
+    attackerFaces: log.attackerDice.map(randomFace),
+    defenderFaces: log.defenderDice.map(randomFace),
+  }
+  const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+  const step = reduceMotion ? 0 : 420
+  playSound('dice')
+  const tumble = window.setInterval(() => {
+    const overlay = battleOverlay.value
+    if (!overlay || overlay.phase !== 'rolling') return
+    overlay.attackerFaces = log.attackerDice.map(randomFace)
+    overlay.defenderFaces = log.defenderDice.map(randomFace)
+  }, 70)
+  battleTimers.push(tumble)
+  battleTimers.push(window.setTimeout(() => {
+    window.clearInterval(tumble)
+    const overlay = battleOverlay.value
+    if (!overlay) return
+    overlay.attackerFaces = [...log.attackerDice]
+    overlay.defenderFaces = [...log.defenderDice]
+    overlay.phase = 'totals'
+    playSound(log.captured === true ? 'horn' : 'clash')
+    battleTimers.push(window.setTimeout(() => {
+      if (!battleOverlay.value) return
+      battleOverlay.value.phase = 'done'
+      // Other players' screens replay the battle, then clear it themselves.
+      if (log.attackerId !== ownParty.value?.id) {
+        battleCloseTimer = window.setTimeout(closeBattle, 5000)
+      }
+    }, 2 * step))
+  }, reduceMotion ? 0 : 950))
+}
+
+function closeBattle() {
+  clearBattleTimers()
+  battleOverlay.value = null
+}
+
+function battleTotal(dice) {
+  return dice.reduce((sum, face) => sum + face, 0)
+}
+
+/** Totals from the server; older logs only have dice. */
+function sideTotal(log, side) {
+  const total = side === 'attacker' ? log.attackerTotal : log.defenderTotal
+  return total ?? battleTotal(side === 'attacker' ? log.attackerDice : log.defenderDice)
+}
+
+function battleWinner(log) {
+  return sideTotal(log, 'attacker') > sideTotal(log, 'defender') ? 'attacker' : 'defender'
+}
+
+function dieClass(overlay, side) {
+  const classes = [side === 'attacker' ? 'battle-die-attacker' : 'battle-die-defender']
+  if (overlay.phase === 'rolling') classes.push('rolling')
+  if (overlay.phase === 'done') classes.push(battleWinner(overlay.log) === side ? 'won' : 'lost')
+  return classes
+}
+
+/** Army count on screen: the count before the battle until the result is shown. */
+function battleUnits(overlay, side) {
+  const log = overlay.log
+  const after = side === 'attacker' ? log.attackerUnits : log.defenderUnits
+  const fell = side === 'attacker' ? log.attackerFell : log.defenderFell
+  const captured = side === 'defender' && log.captured === true
+  if (overlay.phase === 'done') return fell ? 'Fallen' : captured ? 'Captured' : `${after}`
+  const losses = side === 'attacker' ? log.attackerLosses : log.defenderLosses
+  return `${fell || captured ? after : after + losses}`
+}
+
+function battleOutcome(log) {
+  const winner = battleWinner(log) === 'attacker' ? log.attacker : log.defender
+  const loser = battleWinner(log) === 'attacker' ? log.defender : log.attacker
+  const score = `${sideTotal(log, 'attacker')} vs. ${sideTotal(log, 'defender')}`
+  if (log.captured === true) return `${score}: ${log.attacker} captured ${log.defender}.`
+  if (log.attackerFell) return `${score}: ${log.attacker} has fallen.`
+  if (log.defenderFell) return `${score}: ${log.defender} has fallen.`
+  const unitName = log.captured === false && loser === log.defender ? 'garrison unit' : 'unit'
+  return `${score}: ${winner} wins · ${loser} lost 1 ${unitName}.`
+}
+
+let centeredGame = ''
+watch(() => [game.value?.code, game.value?.status, isCompact.value, mapWorld.value], ([gameCode, status, compact, world]) => {
+  if (!gameCode || status !== 'campaign' || !compact || !world || centeredGame === gameCode) return
+  centeredGame = gameCode
+  requestAnimationFrame(centerOnOwnParty)
+})
+
+watch(() => [game.value?.code, game.value?.lastBattle?.id], ([gameCode, battleId]) => {
+  if (!gameCode) return
+  if (gameCode !== seenBattleGame) {
+    // Don't replay a battle that happened before this screen opened.
+    seenBattleGame = gameCode
+    seenBattleId = battleId ?? null
+    return
+  }
+  if (battleId && battleId !== seenBattleId) {
+    seenBattleId = battleId
+    playBattle(game.value.lastBattle)
+  }
+})
+
+// Background music: local audio files played by plain Audio objects (no visible player).
+// The lobby and setup screens play the theme; the campaign plays the ambience track. Both
+// live in frontend/public/music/, which is kept out of git and deploys, so the button only
+// appears where a file exists. If one track is missing, the other plays everywhere.
+const MUSIC_TRACKS = { lobby: '/music/theme.mp3', campaign: '/music/ambience.mp3' }
+const availableTracks = ref({})
+const musicOn = ref(false)
+const musicPlayers = {}
+const musicTrack = computed(() => {
+  const wanted = ['campaign', 'character'].includes(currentView.value) ? 'campaign' : 'lobby'
+  if (availableTracks.value[wanted]) return wanted
+  return Object.keys(MUSIC_TRACKS).find(track => availableTracks.value[track]) || ''
+})
+const musicAvailable = computed(() => Boolean(musicTrack.value))
+
+async function checkMusicAvailable() {
+  const found = {}
+  await Promise.all(Object.entries(MUSIC_TRACKS).map(async ([track, url]) => {
+    try {
+      const response = await fetch(url, { method: 'HEAD' })
+      // Vite's dev server answers unknown paths with the page itself, so check the type too.
+      found[track] = response.ok && (response.headers.get('content-type') || '').startsWith('audio/')
+    } catch {
+      found[track] = false
+    }
+  }))
+  availableTracks.value = found
+}
+
+function musicPlayer(track) {
+  if (!musicPlayers[track]) {
+    const audio = new Audio(MUSIC_TRACKS[track])
+    audio.loop = true
+    audio.volume = 0.4
+    audio.preload = 'none'
+    musicPlayers[track] = audio
+  }
+  return musicPlayers[track]
+}
+
+function pauseAllMusic() {
+  Object.values(musicPlayers).forEach(audio => audio.pause())
+}
+
+// Each track keeps its place, so returning to the lobby resumes the theme where it left off.
+async function playMusicTrack(track) {
+  Object.entries(musicPlayers).forEach(([name, audio]) => { if (name !== track) audio.pause() })
+  if (!track) return
+  try {
+    await musicPlayer(track).play()
+  } catch {
+    musicOn.value = false
+    error.value = 'The music could not be played.'
+  }
+}
+
+async function toggleMusic() {
+  if (musicOn.value) {
+    pauseAllMusic()
+    musicOn.value = false
+    return
+  }
+  musicOn.value = true
+  await playMusicTrack(musicTrack.value)
+}
+
+watch(musicTrack, track => {
+  if (musicOn.value) void playMusicTrack(track)
+})
+
+// ---------- Quick test games (local development only) ----------
+// scripts/test-game.ps1 opens one tab per seat, all sharing a random group id:
+//   /?quicktest=host&group=G&players=6[&start=1]   creates the game as host
+//   /?quicktest=join&group=G&seat=frodo[&leader=Sam] joins that seat once the host has a code
+// The tabs share this browser's storage, so the host hands the game code to the others there.
+// Every seat has its own cookie, so one browser can hold them all.
+function isLocalDevHost() {
+  const host = window.location.hostname
+  return ['localhost', '127.0.0.1', '[::1]'].includes(host) || host.endsWith('.localhost')
+}
+function waitFor(check, timeoutMs, intervalMs = 300) {
+  return new Promise((resolve, reject) => {
+    const started = Date.now()
+    const tick = async () => {
+      let value = null
+      try { value = await check() } catch { value = null }
+      if (value) return resolve(value)
+      if (Date.now() - started > timeoutMs) return reject(new Error('The quick test game timed out.'))
+      window.setTimeout(tick, intervalMs)
+    }
+    void tick()
+  })
+}
+function keepQuickTestOffHomeScreen(gameCode, seatId) {
+  try {
+    const codes = new Set(JSON.parse(window.localStorage.getItem(QUICK_TEST_GAMES_KEY) || '[]'))
+    codes.add(gameCode)
+    window.localStorage.setItem(QUICK_TEST_GAMES_KEY, JSON.stringify([...codes].slice(-50)))
+  } catch { /* the seat just stays in the saved list */ }
+  forgetSavedSeat(gameCode, seatId)
+  refreshSavedSessions()
+}
+async function quickTestFromUrl() {
+  const params = new URLSearchParams(window.location.search)
+  const role = params.get('quicktest')
+  const group = params.get('group')
+  if (!role || !group || !isLocalDevHost()) return false
+  const codeKey = `wargames:quicktest:${group}`
+  try {
+    if (role === 'host') {
+      const players = Number(params.get('players')) === 8 ? 8 : 6
+      const view = await apiRequest('/api/games', {
+        method: 'POST',
+        body: JSON.stringify({ playerName: 'Host', mapWidthMiles: 1000, players }),
+      })
+      window.localStorage.setItem(codeKey, view.code)
+      saveGame(view)
+      keepQuickTestOffHomeScreen(view.code, 'host')
+      if (params.get('start') === '1') {
+        await waitFor(async () => {
+          const room = await apiRequest(`/api/games/${view.code}`, { headers: gameHeaders('host') })
+          return room.seats.every(seat => seat.connected)
+        }, 60000, 700)
+        await startCampaign()
+      }
+    } else if (role === 'join') {
+      const seat = params.get('seat')
+      const gameCode = await waitFor(() => window.localStorage.getItem(codeKey), 60000)
+      const view = await apiRequest(`/api/games/${encodeURIComponent(gameCode)}/join`, {
+        method: 'POST',
+        body: JSON.stringify({ playerName: `Test ${seat}`, characterId: seat, representative: params.get('leader') || null }),
+      })
+      saveGame(view)
+      keepQuickTestOffHomeScreen(view.code, seat)
+    }
+  } catch (quickTestError) {
+    error.value = `Quick test: ${quickTestError.message}`
+  }
+  return true
+}
+
+// ---------- Lobby QR code: scan to open the join link ----------
+const joinQr = ref('')
+watch(() => game.value?.code, async gameCode => {
+  if (!gameCode) { joinQr.value = ''; return }
+  try {
+    joinQr.value = await QRCode.toString(`${window.location.origin}/?game=${gameCode}`, {
+      type: 'svg', margin: 1, errorCorrectionLevel: 'M', color: { dark: '#101b20', light: '#f4ecd6' },
+    })
+  } catch {
+    joinQr.value = ''
+  }
+}, { immediate: true })
+
+// ---------- "While you were away": events since this seat's last turn ended ----------
+const awayRecap = ref(null)
+function recapStorageKey() {
+  return `wargames:recap:${game.value?.code}:${game.value?.ownCharacterId}`
+}
+function readRecapMark() {
+  try { return Number(window.localStorage.getItem(recapStorageKey())) } catch { return NaN }
+}
+function writeRecapMark(count) {
+  try { window.localStorage.setItem(recapStorageKey(), String(count)) } catch { /* not saved */ }
+}
+watch(isMyTurn, (mine, wasMine) => {
+  const current = game.value
+  if (!current?.ownCharacterId) return
+  if (mine && !wasMine) {
+    const seen = readRecapMark()
+    const events = current.events.slice(Number.isFinite(seen) && seen > 0 ? seen : current.events.length)
+    awayRecap.value = events.length ? { events: events.slice(-8), more: Math.max(0, events.length - 8) } : null
+  } else if (!mine && wasMine) {
+    writeRecapMark(current.events.length)
+    awayRecap.value = null
+  }
+})
+
+// ---------- Sound effects (synthesized, no audio files) ----------
+function readSoundPref() {
+  // Off unless this device has turned it on.
+  try { return window.localStorage.getItem('wargames:sound') === 'on' } catch { return false }
+}
+const soundOn = ref(readSoundPref())
+function toggleSound() {
+  soundOn.value = !soundOn.value
+  try { window.localStorage.setItem('wargames:sound', soundOn.value ? 'on' : 'off') } catch { /* not saved */ }
+  if (soundOn.value) playSound('chime')
+}
+let audioContext = null
+function getAudio() {
+  if (!audioContext) {
+    const Context = window.AudioContext || window.webkitAudioContext
+    if (!Context) return null
+    audioContext = new Context()
+  }
+  if (audioContext.state === 'suspended') void audioContext.resume()
+  return audioContext
+}
+// Browsers only allow audio after a tap or click, so the first one unlocks it.
+function unlockAudio() {
+  getAudio()
+  window.removeEventListener('pointerdown', unlockAudio)
+}
+function noiseBuffer(audio, seconds) {
+  const buffer = audio.createBuffer(1, Math.ceil(audio.sampleRate * seconds), audio.sampleRate)
+  const data = buffer.getChannelData(0)
+  for (let index = 0; index < data.length; index += 1) data[index] = Math.random() * 2 - 1
+  return buffer
+}
+function envelope(audio, at, peak, attack, decay) {
+  const gain = audio.createGain()
+  gain.gain.setValueAtTime(0.0001, at)
+  gain.gain.exponentialRampToValueAtTime(peak, at + attack)
+  gain.gain.exponentialRampToValueAtTime(0.0001, at + attack + decay)
+  return gain
+}
+function tone(audio, out, { type = 'sine', freq, to, at, attack = 0.01, decay = 0.4, peak = 0.3 }) {
+  const osc = audio.createOscillator()
+  osc.type = type
+  osc.frequency.setValueAtTime(freq, at)
+  if (to) osc.frequency.exponentialRampToValueAtTime(to, at + attack + decay)
+  const gain = envelope(audio, at, peak, attack, decay)
+  osc.connect(gain).connect(out)
+  osc.start(at)
+  osc.stop(at + attack + decay + 0.05)
+}
+function noise(audio, out, { at, seconds = 0.05, freq = 2500, q = 1.2, peak = 0.4, type = 'bandpass' }) {
+  const source = audio.createBufferSource()
+  source.buffer = noiseBuffer(audio, seconds + 0.05)
+  const filter = audio.createBiquadFilter()
+  filter.type = type
+  filter.frequency.value = freq
+  filter.Q.value = q
+  const gain = envelope(audio, at, peak, 0.004, seconds)
+  source.connect(filter).connect(gain).connect(out)
+  source.start(at)
+}
+const sounds = {
+  // Dice tumbling in a cup: a scatter of short clicks.
+  dice(audio, out, now) {
+    for (let index = 0; index < 14; index += 1) {
+      noise(audio, out, { at: now + index * 0.055 + Math.random() * 0.03, seconds: 0.035,
+        freq: 1800 + Math.random() * 2200, peak: 0.25 + Math.random() * 0.25 })
+    }
+  },
+  // Steel on steel.
+  clash(audio, out, now) {
+    noise(audio, out, { at: now, seconds: 0.35, freq: 3500, type: 'highpass', q: 0.7, peak: 0.35 })
+    tone(audio, out, { type: 'triangle', freq: 1270, at: now, decay: 0.7, peak: 0.12 })
+    tone(audio, out, { type: 'triangle', freq: 1893, at: now, decay: 0.55, peak: 0.08 })
+  },
+  // A war horn for a captured stronghold.
+  horn(audio, out, now) {
+    const filter = audio.createBiquadFilter()
+    filter.type = 'lowpass'
+    filter.frequency.value = 900
+    filter.connect(out)
+    tone(audio, filter, { type: 'sawtooth', freq: 147, at: now, attack: 0.12, decay: 1.1, peak: 0.28 })
+    tone(audio, filter, { type: 'sawtooth', freq: 220, at: now + 0.05, attack: 0.15, decay: 1.0, peak: 0.18 })
+  },
+  // The Ring destroyed: a rising, bright chord.
+  victory(audio, out, now) {
+    [261.6, 329.6, 392, 523.3, 659.3].forEach((freq, index) =>
+      tone(audio, out, { type: 'triangle', freq, at: now + index * 0.18, attack: 0.05, decay: 1.8, peak: 0.16 }))
+  },
+  // The Ring seized: a low, falling drone.
+  doom(audio, out, now) {
+    tone(audio, out, { type: 'sawtooth', freq: 110, to: 55, at: now, attack: 0.2, decay: 2.2, peak: 0.2 })
+    tone(audio, out, { type: 'sine', freq: 130.8, to: 65, at: now + 0.1, attack: 0.2, decay: 2.0, peak: 0.2 })
+  },
+  chime(audio, out, now) {
+    tone(audio, out, { freq: 880, at: now, decay: 0.5, peak: 0.15 })
+    tone(audio, out, { freq: 1318.5, at: now + 0.09, decay: 0.6, peak: 0.12 })
+  },
+}
+function playSound(name) {
+  if (!soundOn.value || !sounds[name]) return
+  const audio = getAudio()
+  if (!audio || audio.state !== 'running') return
+  const out = audio.createGain()
+  out.gain.value = 0.7
+  out.connect(audio.destination)
+  sounds[name](audio, out, audio.currentTime + 0.01)
+}
+watch(() => [game.value?.code, game.value?.ringHolder], ([gameCode, holder], previous) => {
+  if (!previous || previous[0] !== gameCode || previous[1] !== 'frodo') return
+  if (holder === 'destroyed') playSound('victory')
+  else if (holder === 'sauron') playSound('doom')
+})
+
+// ---------- TV mode: the host's screen follows the action ----------
+const tvMode = ref(false)
+function toggleTvMode() {
+  tvMode.value = !tvMode.value
+  try {
+    if (tvMode.value && !document.fullscreenElement) void document.documentElement.requestFullscreen?.()
+    if (!tvMode.value && document.fullscreenElement) void document.exitFullscreen?.()
+  } catch { /* fullscreen is optional */ }
+  if (tvMode.value) window.setTimeout(followActiveParty, 50)
+  else resetMapView()
+}
+function focusMapOn(x, y, zoom) {
+  const world = mapWorld.value
+  if (!world) return
+  mapZoom.value = clampMapZoom(zoom)
+  mapPan.value = clampMapPan({
+    x: (0.5 - x / 100) * world.offsetWidth * mapZoom.value,
+    y: (0.5 - y / 100) * world.offsetHeight * mapZoom.value,
+  })
+}
+function followActiveParty() {
+  if (!tvMode.value) return
+  const party = activeParty.value
+  // A hidden party has no position on the host's screen: show the whole map instead.
+  if (!party || party.x === null || party.x === undefined) resetMapView()
+  else focusMapOn(party.x, party.y, 2)
+}
+watch(() => [activeParty.value?.id, activeParty.value?.x, activeParty.value?.y], () => {
+  if (tvMode.value) followActiveParty()
+})
+
 onMounted(async () => {
+  window.addEventListener('pointerdown', unlockAudio)
   refreshSavedSessions()
   window.addEventListener('storage', refreshSavedSessions)
   window.addEventListener('resize', onWindowResize)
-  void migrateLegacySeatTokens().then(showGameFromUrl)
+  void migrateLegacySeatTokens().then(async () => {
+    if (!(await quickTestFromUrl())) await showGameFromUrl()
+  })
+  void checkMusicAvailable()
+  compactQuery?.addEventListener?.('change', onCompactChange)
   try {
     await loadMapPlaces()
   } catch (loadError) {
@@ -805,11 +1510,16 @@ onBeforeUnmount(() => {
   window.clearTimeout(suppressMapClickTimer)
   window.removeEventListener('storage', refreshSavedSessions)
   window.removeEventListener('resize', onWindowResize)
+  pauseAllMusic()
+  clearBattleTimers()
+  compactQuery?.removeEventListener?.('change', onCompactChange)
+  window.removeEventListener('pointerdown', unlockAudio)
+  void audioContext?.close()
 })
 </script>
 
 <template>
-  <main class="game-app">
+  <main class="game-app" :class="{ 'tv-mode': tvMode }">
     <header class="game-topbar">
       <a class="game-brand" href="#" aria-label="War Games home" @click.prevent="backHome">
         <span class="game-brand-mark">B</span>
@@ -824,9 +1534,91 @@ onBeforeUnmount(() => {
           <button type="button" :class="{ selected: currentView === 'character' }" @click="currentView = 'character'">My character</button>
           <button type="button" :class="{ selected: currentView === 'campaign' }" @click="currentView = 'campaign'">Shared map</button>
         </nav>
+        <button v-if="isHost && game?.status === 'campaign'" class="rules-toggle tv-toggle" type="button"
+          :aria-pressed="tvMode" @click="toggleTvMode">{{ tvMode ? 'Exit TV' : 'TV mode' }}</button>
+        <button class="sound-toggle" type="button" :aria-pressed="soundOn"
+          :aria-label="soundOn ? 'Mute sound effects' : 'Turn on sound effects'"
+          :title="soundOn ? 'Sound effects on' : 'Sound effects off'" @click="toggleSound">{{ soundOn ? '🔊' : '🔇' }}</button>
+        <button v-if="game" class="rules-toggle" type="button" :aria-expanded="rulesOpen"
+          @click="rulesOpen = !rulesOpen">Rules</button>
+        <button v-if="musicAvailable" class="music-toggle" :class="{ playing: musicOn }" type="button"
+          :aria-pressed="musicOn" :aria-label="musicOn ? 'Stop background music' : `Play background music (${musicTrack === 'campaign' ? 'campaign' : 'lobby'} track)`"
+          :title="musicOn ? 'Stop music' : 'Play music'" @click="toggleMusic">♪</button>
         <button class="map-editor-link" type="button" @click="emit('open-map-editor')">Map editor</button>
       </div>
     </header>
+
+    <div v-if="rulesOpen" class="rules-backdrop" @click.self="rulesOpen = false">
+      <section class="rules-sheet" role="dialog" aria-modal="true" aria-labelledby="rules-title">
+        <header>
+          <h2 id="rules-title">How to play</h2>
+          <button type="button" aria-label="Close rules" @click="rulesOpen = false">×</button>
+        </header>
+        <h3>Winning</h3>
+        <ul>
+          <li><b>Free Peoples</b> win when the Ring-bearer (the Hobbits' leader) destroys the Ring at Mount Doom.</li>
+          <li><b>Sauron's Forces</b> win if the Ring-bearer falls in battle, or if they hold every stronghold.</li>
+        </ul>
+        <h3>Your turn</h3>
+        <ul>
+          <li>Turn order is shuffled once at the start and repeats every round.</li>
+          <li>On your turn you may move once and attack once, in that order. You can't move after attacking. Then end your turn.</li>
+        </ul>
+        <h3>Movement</h3>
+        <ul>
+          <li>Movement points reset each round (Hobbits 14, everyone else 12).</li>
+          <li>Miles per point: plains 15, forest 10, mountains 7.5, volcanic ground 6, along a river 10. Each river crossing costs 1 extra point.</li>
+          <li>Ending a move in mountains or on volcanic ground hides your party from the other team and the host's map. Forest hides you half the time. Meeting an enemy reveals both parties.</li>
+        </ul>
+        <h3>Battle</h3>
+        <ul>
+          <li>Move onto an enemy party or stronghold, then attack. A party standing on a stronghold must be beaten first.</li>
+          <li>Each side rolls one die per army unit. A leader with no units left, or a stronghold with no garrison, rolls one die.</li>
+          <li>The higher total wins and ties go to the defender. The loser loses one unit. With none left, a leader falls or a stronghold is captured.</li>
+          <li>Defending on volcanic ground or Mount Doom costs 1 from each die. Garrisons never regrow.</li>
+        </ul>
+        <h3>The Ring</h3>
+        <ul>
+          <li>A move that ends within about 25 miles of Mount Doom lands on the summit.</li>
+          <li>On the Ring-bearer's turn there, choose <b>Destroy the Ring</b>. Each enemy party on Mount Doom fights the Ring-bearer once first. If the Ring-bearer survives, the Ring is destroyed.</li>
+        </ul>
+      </section>
+    </div>
+
+    <div v-if="battleOverlay" class="battle-overlay" role="dialog" aria-modal="false" aria-label="Battle">
+      <div class="battle-card">
+        <p class="battle-card-title">BATTLE · ROUND {{ battleOverlay.log.round }}</p>
+        <div class="battle-card-sides">
+          <div class="battle-card-side">
+            <strong>{{ battleOverlay.log.attacker }}</strong>
+            <small>attacking</small>
+            <span class="battle-card-army">Army {{ battleUnits(battleOverlay, 'attacker') }} / {{ battleOverlay.log.attackerInitialUnits }}</span>
+            <div class="battle-card-dice">
+              <i v-for="(face, index) in battleOverlay.attackerFaces" :key="`a${index}`" class="battle-die"
+                :class="dieClass(battleOverlay, 'attacker')">{{ face }}</i>
+            </div>
+            <span class="battle-card-total" :class="{ hidden: battleOverlay.phase === 'rolling' }">Total {{ sideTotal(battleOverlay.log, 'attacker') }}</span>
+          </div>
+          <span class="battle-card-vs">vs</span>
+          <div class="battle-card-side">
+            <strong>{{ battleOverlay.log.defender }}</strong>
+            <small>defending</small>
+            <span class="battle-card-army">{{ battleOverlay.log.captured === null || battleOverlay.log.captured === undefined ? 'Army' : 'Garrison' }} {{ battleUnits(battleOverlay, 'defender') }} / {{ battleOverlay.log.defenderInitialUnits ?? 0 }}</span>
+            <div class="battle-card-dice">
+              <i v-for="(face, index) in battleOverlay.defenderFaces" :key="`d${index}`" class="battle-die"
+                :class="dieClass(battleOverlay, 'defender')">{{ face }}</i>
+            </div>
+            <span class="battle-card-total" :class="{ hidden: battleOverlay.phase === 'rolling' }">Total {{ sideTotal(battleOverlay.log, 'defender') }}</span>
+          </div>
+        </div>
+        <p class="battle-card-result" aria-live="polite">
+          {{ battleOverlay.phase === 'done' ? battleOutcome(battleOverlay.log) : battleOverlay.phase === 'rolling' ? 'Rolling…' : 'Adding up…' }}
+        </p>
+        <div v-if="battleOverlay.phase === 'done'" class="battle-card-actions">
+          <button class="action-button" type="button" @click="closeBattle">Close</button>
+        </div>
+      </div>
+    </div>
 
     <div v-if="error" class="game-message error-message" role="alert">
       {{ error }}
@@ -865,6 +1657,9 @@ onBeforeUnmount(() => {
         <div class="welcome-divider"><span>or</span></div>
         <button class="text-button" type="button" @click="currentView = 'host'">Host a game</button>
         <p class="welcome-footnote">Enter the code shared by your host. Saved seats stay available on this device.</p>
+        <button class="thrones-link" type="button" @click="emit('open-thrones', '')">
+          <strong>The Iron Throne</strong><small>A Game of Thrones campaign · Westeros &amp; Essos →</small>
+        </button>
       </div>
     </section>
 
@@ -881,26 +1676,33 @@ onBeforeUnmount(() => {
           <span>miles across</span>
         </div>
         <p class="scale-help">Distance is scaled from the map's 1,774 × 887 coordinate space. This width converts map travel to miles and movement points.</p>
+        <span class="setup-label">PLAYERS</span>
+        <div class="player-count" role="radiogroup" aria-label="Number of players">
+          <button v-for="count in [6, 8]" :key="count" type="button" role="radio" :aria-checked="playerCount === count"
+            :class="{ selected: playerCount === count }" @click="playerCount = count">
+            {{ count }} players<small>{{ count === 8 ? 'Elves & Ringwraiths expansion' : 'Classic' }}</small>
+          </button>
+        </div>
         <div class="roster-group free-group">
           <h2>FREE PEOPLES</h2>
-          <div v-for="party in roster.filter(item => item.team === 'Free Peoples')" :key="party.id" class="roster-row">
-            <strong>{{ party.name }}</strong><span>{{ party.army }} · {{ party.units }}/{{ party.units }} · {{ party.start }}</span>
+          <div v-for="party in hostRoster.filter(item => item.team === 'Free Peoples')" :key="party.id" class="roster-row">
+            <strong>{{ party.name }}<small v-if="representatives[party.id]"> or {{ representatives[party.id].slice(1).join(', ') }}</small></strong><span>{{ party.army }} · {{ party.units }}/{{ party.units }} · {{ party.start }}</span>
           </div>
         </div>
         <div class="roster-group dark-group">
           <h2>SAURON'S FORCES</h2>
-          <div v-for="party in roster.filter(item => item.team !== 'Free Peoples')" :key="party.id" class="roster-row">
+          <div v-for="party in hostRoster.filter(item => item.team !== 'Free Peoples')" :key="party.id" class="roster-row">
             <strong>{{ party.name }}</strong><span>{{ party.army }} · {{ party.units }}/{{ party.units }} · {{ party.start }}</span>
           </div>
         </div>
-        <p class="host-summary">6 parties · 6 strongholds · 6 army units per team</p>
+        <p class="host-summary">{{ playerCount }} parties · {{ playerCount }} strongholds · {{ playerCount === 8 ? 8 : 6 }} army units per team</p>
         <button class="gold-button create-game-button" type="button" :disabled="isSubmitting || !hostName.trim() || !mapPlaces.length" @click="hostGame">
           {{ isSubmitting ? 'Creating lobby…' : 'Create lobby' }}
         </button>
       </aside>
       <section class="setup-map map-stage">
         <div class="game-map-world">
-          <img src="/map-assets/middle-earth/map.png" alt="Map of Middle-earth" />
+          <img src="/map-assets/middle-earth/map.webp" alt="Map of Middle-earth" />
           <span v-for="place in mapPlaces.filter(item => item.tier === 0)" :key="`region-${place.id}`"
             class="region-label" :style="{ left: `${place.x}%`, top: `${place.y}%` }">{{ place.name }}</span>
           <span v-for="marker in hostMapMarkers" :key="marker.key" class="map-icon-marker"
@@ -908,11 +1710,12 @@ onBeforeUnmount(() => {
             <button v-if="marker.kind === 'party'" type="button" class="host-party-pin"
               :class="ownerClass(marker.party.team)" :aria-expanded="selectedMarkerId === marker.key"
               :aria-label="`Show ${marker.party.name} information`" @click.stop="toggleMapMarker(marker)">
-              {{ marker.party.initial }}
+              <img v-if="hasPortrait(marker.party.name)" class="portrait" :src="portraitUrl(marker.party.name)" alt="" @error="markPortraitMissing(marker.party.name)" /><template v-else>{{ marker.party.initial }}</template>
             </button>
-            <button v-else type="button" class="objective-pin" :class="ownerClass(marker.city.owner)"
+            <button v-else type="button" class="objective-pin stronghold-icon" :class="ownerClass(marker.city.owner)"
               :aria-expanded="selectedMarkerId === marker.key"
               :aria-label="`Show ${marker.city.objectiveName} information`" @click.stop="toggleMapMarker(marker)">
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path class="keep" d="M2 19V8h3V5h2.5v3h2V3h1v5h2V5H15v3h3v11h-6v-4a2 2 0 0 0-4 0v4z" /></svg>
               <span class="sr-only">{{ marker.city.objectiveName }}</span>
             </button>
             <div v-if="selectedMarkerId === marker.key" class="map-marker-info">
@@ -923,6 +1726,7 @@ onBeforeUnmount(() => {
               <template v-else>
                 <strong>{{ marker.city.objectiveName }}</strong>
                 <span>Controlled by {{ marker.city.owner }}</span>
+                <span v-if="marker.city.units !== undefined">Garrison {{ garrison(marker.city) }}</span>
               </template>
             </div>
           </span>
@@ -943,7 +1747,7 @@ onBeforeUnmount(() => {
             <button v-for="seat in freeSeats" :key="seat.id" type="button" class="seat-option"
               :class="{ chosen: selectedSeat === seat.id, unavailable: seat.connected }"
               :disabled="seat.connected" @click="selectedSeat = seat.id">
-              <span class="seat-avatar">{{ seat.name[0] }}</span><span class="seat-details"><strong>{{ seat.name }}</strong><small>{{ seat.army }} · {{ seat.initialUnits }} units</small></span>
+              <span class="seat-avatar"><img v-if="hasPortrait(seatLeader(seat))" class="portrait" :src="portraitUrl(seatLeader(seat))" alt="" @error="markPortraitMissing(seatLeader(seat))" /><template v-else>{{ seatLeader(seat)[0] }}</template></span><span class="seat-details"><strong>{{ seat.connected || seat.representatives?.length <= 1 ? seat.name : seat.representatives.join(' / ') }}</strong><small>{{ seat.army }} · {{ seat.initialUnits }} units</small></span>
               <span class="seat-status">{{ seat.connected ? seat.playerName || 'Taken' : 'Open seat' }}</span>
             </button>
           </section>
@@ -952,12 +1756,20 @@ onBeforeUnmount(() => {
             <button v-for="seat in sauronSeats" :key="seat.id" type="button" class="seat-option"
               :class="{ chosen: selectedSeat === seat.id, unavailable: seat.connected }"
               :disabled="seat.connected" @click="selectedSeat = seat.id">
-              <span class="seat-avatar">{{ seat.name[0] }}</span><span class="seat-details"><strong>{{ seat.name }}</strong><small>{{ seat.army }} · {{ seat.initialUnits }} units</small></span>
+              <span class="seat-avatar"><img v-if="hasPortrait(seatLeader(seat))" class="portrait" :src="portraitUrl(seatLeader(seat))" alt="" @error="markPortraitMissing(seatLeader(seat))" /><template v-else>{{ seatLeader(seat)[0] }}</template></span><span class="seat-details"><strong>{{ seat.connected || seat.representatives?.length <= 1 ? seat.name : seat.representatives.join(' / ') }}</strong><small>{{ seat.army }} · {{ seat.initialUnits }} units</small></span>
               <span class="seat-status">{{ seat.connected ? seat.playerName || 'Taken' : 'Open seat' }}</span>
             </button>
           </section>
         </div>
-        <button class="gold-button" type="button" :disabled="isSubmitting || !playerName.trim() || !selectedSeatData" @click="joinSeat">Join as {{ selectedSeatData?.name || 'a character' }}</button>
+        <div v-if="selectedSeatData?.representatives?.length > 1" class="representative-picker">
+          <span class="setup-label">REPRESENT THE {{ selectedSeatData.army.toUpperCase() }} AS</span>
+          <div role="radiogroup" :aria-label="`Leader of the ${selectedSeatData.army}`">
+            <button v-for="leader in selectedSeatData.representatives" :key="leader" type="button" role="radio"
+              :aria-checked="selectedRepresentative === leader" :class="{ selected: selectedRepresentative === leader }"
+              @click="selectedRepresentative = leader">{{ leader }}</button>
+          </div>
+        </div>
+        <button class="gold-button" type="button" :disabled="isSubmitting || !playerName.trim() || !selectedSeatData" @click="joinSeat">Join as {{ selectedRepresentative || selectedSeatData?.name || 'a character' }}</button>
       </div>
     </section>
 
@@ -966,12 +1778,16 @@ onBeforeUnmount(() => {
       <div class="invite-panel">
         <div><label>JOIN LINK</label><strong>{{ joinLink }}</strong><button type="button" @click="copyJoinLink">Copy</button></div>
         <div><label>GAME CODE</label><strong class="invite-code">{{ game.code }}</strong><small>Join on your phone</small></div>
+        <div v-if="joinQr" class="invite-qr">
+          <span role="img" aria-label="QR code that opens the join link" v-html="joinQr"></span>
+          <small>Scan to join</small>
+        </div>
       </div>
       <div class="lobby-teams">
         <section class="lobby-team free-group">
           <h2>FREE PEOPLES</h2>
           <article v-for="seat in freeSeats" :key="seat.id" class="lobby-seat">
-            <span class="seat-avatar">{{ seat.name[0] }}</span>
+            <span class="seat-avatar"><img v-if="hasPortrait(seat.name)" class="portrait" :src="portraitUrl(seat.name)" alt="" @error="markPortraitMissing(seat.name)" /><template v-else>{{ seat.name[0] }}</template></span>
             <span class="seat-details"><strong>{{ seat.name }}</strong><small>{{ seat.army }} · {{ seat.initialUnits }} units</small></span>
             <span class="seat-status"><i :class="{ connected: seat.connected }"></i>{{ seat.connected ? seat.playerName : 'Open seat' }}</span>
           </article>
@@ -979,17 +1795,17 @@ onBeforeUnmount(() => {
         <section class="lobby-team dark-group">
           <h2>SAURON'S FORCES</h2>
           <article v-for="seat in sauronSeats" :key="seat.id" class="lobby-seat">
-            <span class="seat-avatar">{{ seat.name[0] }}</span>
+            <span class="seat-avatar"><img v-if="hasPortrait(seat.name)" class="portrait" :src="portraitUrl(seat.name)" alt="" @error="markPortraitMissing(seat.name)" /><template v-else>{{ seat.name[0] }}</template></span>
             <span class="seat-details"><strong>{{ seat.name }}</strong><small>{{ seat.army }} · {{ seat.initialUnits }} units</small></span>
             <span class="seat-status"><i :class="{ connected: seat.connected }"></i>{{ seat.connected ? seat.playerName : 'Open seat' }}</span>
           </article>
         </section>
       </div>
-      <p class="lobby-footnote">Six parties · 6 army units per team</p>
+      <p class="lobby-footnote">{{ seatCount }} parties · {{ teamUnits }} army units per team</p>
       <button v-if="isHost" class="gold-button start-campaign-button" type="button" :disabled="isSubmitting || !allSeatsTaken" @click="startCampaign">
         {{ isSubmitting ? 'Starting…' : '⚔　Start campaign' }}
       </button>
-      <p v-if="isHost && !allSeatsTaken" class="lobby-hint">Waiting for all six players to take a seat.</p>
+      <p v-if="isHost && !allSeatsTaken" class="lobby-hint">Waiting for all {{ seatCount }} players to take a seat.</p>
       <p v-else-if="!isHost" class="lobby-hint">Waiting for the host to start the campaign.</p>
     </section>
 
@@ -1014,7 +1830,7 @@ onBeforeUnmount(() => {
           <section class="sidebar-card objective-list">
             <h2>STRONGHOLD CONTROL</h2>
             <div v-for="city in game.objectives" :key="city.id" class="party-list-row">
-              <span>{{ city.name }}</span><small :class="ownerClass(city.owner)">{{ city.owner }}</small>
+              <span>{{ city.name }} · {{ garrison(city) }}</span><small :class="ownerClass(city.owner)">{{ city.owner }}</small>
             </div>
           </section>
           <div class="recent-events">
@@ -1031,8 +1847,10 @@ onBeforeUnmount(() => {
             @pointerdown="onMapPointerDown" @pointermove="onMapPointerMove"
             @pointerup="onMapPointerUp" @pointercancel="onMapPointerUp"
             @wheel.prevent="onMapWheel" @scroll="resetMapStageScroll" @click="selectDestination">
-            <div ref="mapWorld" class="game-map-world play-map-world" :style="playMapWorldStyle">
-              <img src="/map-assets/middle-earth/map.png" alt="Campaign map of Middle-earth" draggable="false" />
+            <div ref="mapWorld" class="game-map-world play-map-world" :class="{ gesturing: mapGesturing }" :style="playMapWorldStyle">
+              <img src="/map-assets/middle-earth/map.webp" alt="Campaign map of Middle-earth" draggable="false" />
+              <img v-for="tile in hdTiles" :key="tile.key" class="map-hd-tile" :src="tile.src" :style="tile.style"
+                alt="" draggable="false" decoding="async" />
               <span v-for="place in mapPlaces.filter(item => item.tier === 0)" :key="place.id" class="region-label"
                 :style="{ left: `${place.x}%`, top: `${place.y}%` }">{{ place.name }}</span>
               <span v-for="place in visibleDetailPlaces" :key="`detail:${place.id}`" class="detail-place-label"
@@ -1042,10 +1860,10 @@ onBeforeUnmount(() => {
                 :class="[`map-icon-${marker.kind}`, { selected: selectedMarkerId === marker.key, active: marker.kind === 'party' && marker.party.id === game.activeCharacter, own: marker.kind === 'party' && marker.party.id === game.ownCharacterId }]"
                 :style="marker.style">
                 <button v-if="marker.kind === 'party'" type="button" class="campaign-party-icon"
-                  :class="[partyClass(marker.party), { 'multi-initial': marker.party.id === 'saruman' }]"
+                  :class="[partyClass(marker.party), { 'multi-initial': partyInitial(marker.party).length > 1 }]"
                   :aria-expanded="selectedMarkerId === marker.key"
                   :aria-label="`Show ${marker.party.name} information`" @click.stop="toggleMapMarker(marker)">
-                  {{ roster.find(item => item.id === marker.party.id)?.initial }}
+                  <img v-if="hasPortrait(marker.party.name)" class="portrait" :src="portraitUrl(marker.party.name)" alt="" @error="markPortraitMissing(marker.party.name)" /><template v-else>{{ partyInitial(marker.party) }}</template>
                 </button>
                 <button v-else-if="marker.kind === 'ring-site'" type="button" class="ring-site-icon"
                   :aria-expanded="selectedMarkerId === marker.key"
@@ -1054,8 +1872,12 @@ onBeforeUnmount(() => {
                 </button>
                 <button v-else type="button" class="stronghold-icon" :class="ownerClass(marker.city.owner)"
                   :aria-expanded="selectedMarkerId === marker.key"
-                  :aria-label="`Show ${marker.city.name} information`" @click.stop="toggleMapMarker(marker)">
-                  <span class="sr-only">{{ marker.city.name }}</span>
+                  :aria-label="`Show ${marker.city.name} information, garrison ${marker.city.units ?? 0} of ${marker.city.initialUnits ?? 0}`"
+                  @click.stop="toggleMapMarker(marker)">
+                  <svg viewBox="0 0 20 20" aria-hidden="true"><path class="keep" d="M2 19V8h3V5h2.5v3h2V3h1v5h2V5H15v3h3v11h-6v-4a2 2 0 0 0-4 0v4z" /></svg>
+                  <span v-if="marker.city.initialUnits" class="garrison-pips" aria-hidden="true">
+                    <i v-for="pip in marker.city.initialUnits" :key="pip" :class="{ lost: pip > (marker.city.units ?? 0) }"></i>
+                  </span>
                 </button>
                 <div v-if="selectedMarkerId === marker.key" class="map-marker-info">
                   <template v-if="marker.kind === 'party'">
@@ -1072,6 +1894,7 @@ onBeforeUnmount(() => {
                   <template v-else>
                     <strong>{{ marker.city.name }}</strong>
                     <span>Controlled by {{ marker.city.owner }}</span>
+                    <span>Garrison {{ garrison(marker.city) }}</span>
                     <button v-if="canAttackMarker(marker)" type="button" class="marker-battle-button" @click.stop="attack(marker.city.id)">
                       Attack stronghold
                     </button>
@@ -1085,8 +1908,16 @@ onBeforeUnmount(() => {
               <span>{{ Math.round(mapZoom * 100) }}%</span>
               <button type="button" aria-label="Zoom out" :disabled="mapZoom <= 1" @click="changeMapZoom(-0.25)">−</button>
               <button type="button" aria-label="Reset map view" @click="resetMapView">Reset</button>
+              <button v-if="ownParty?.x !== null && ownParty?.x !== undefined" type="button" class="map-locate"
+                aria-label="Center on my party" title="Center on my party" @click="centerOnOwnParty">◎</button>
             </div>
             <div v-if="movementMode" class="map-instruction">Tap map to choose destination</div>
+            <section v-if="awayRecap && currentView !== 'host'" class="away-recap" aria-label="While you were away" @click.stop @pointerdown.stop @wheel.stop>
+              <header><strong>While you were away</strong><button type="button" aria-label="Dismiss" @click="awayRecap = null">×</button></header>
+              <p v-if="awayRecap.more" class="away-more">…and {{ awayRecap.more }} earlier {{ awayRecap.more === 1 ? 'event' : 'events' }}</p>
+              <ul><li v-for="(event, index) in awayRecap.events" :key="index">{{ event }}</li></ul>
+              <button class="gold-button" type="button" @click="awayRecap = null">Your turn</button>
+            </section>
           </div>
           <div class="map-footer">
             <span>MAP SCALE <b>{{ game.mapWidthMiles.toLocaleString() }} mi</b></span>
@@ -1099,29 +1930,120 @@ onBeforeUnmount(() => {
               <strong>THE RING</strong>
               <span v-if="atMountDoom">
                 {{ isMyTurn
-                  ? 'Frodo can destroy the Ring now. Each opponent here first makes one attack on Frodo.'
-                  : 'The Ring action is available on Frodo’s turn.' }}
+                  ? `${ownParty.name} can destroy the Ring now. Each opponent on Mount Doom first fights ${ownParty.name} once.`
+                  : `The Ring action is available on ${ownParty.name}’s turn.` }}
               </span>
-              <span v-else>Move Frodo to Mount Doom to unlock the Ring action.</span>
+              <span v-else>
+                Move {{ ownParty.name }} onto Mount Doom (the ⌁ marker) to unlock the Ring action<template
+                  v-if="milesFromMountDoom !== null"> · about {{ Math.round(milesFromMountDoom) }} miles away</template>.
+              </span>
             </div>
             <button class="action-button danger-button" type="button"
               :disabled="isSubmitting || !canDestroyRing" @click="destroyRing">
               Destroy the Ring
             </button>
           </section>
+          <section v-if="game.lastBattle" class="last-battle" aria-label="Last battle">
+            <strong>LAST BATTLE · ROUND {{ game.lastBattle.round }}</strong>
+            <div class="battle-sides">
+              <div>
+                <span>{{ game.lastBattle.attacker }}</span>
+                <span class="dice-row"><i v-for="(die, index) in game.lastBattle.attackerDice" :key="`a${index}`" class="die">{{ die }}</i></span>
+              </div>
+              <b>vs</b>
+              <div>
+                <span>{{ game.lastBattle.defender }}</span>
+                <span class="dice-row"><i v-for="(die, index) in game.lastBattle.defenderDice" :key="`d${index}`" class="die defender">{{ die }}</i></span>
+              </div>
+            </div>
+            <span class="battle-outcome">{{ lastBattleSummary }}</span>
+          </section>
+          <div class="mobile-dock" aria-label="Your turn">
+            <div class="dock-status">
+              <template v-if="ownParty">
+                <strong>{{ ownParty.name }}</strong>
+                <span>{{ ownParty.units }}/{{ ownParty.initialUnits }} units · {{ ownParty.movementRemaining.toFixed(1) }} mv</span>
+              </template>
+              <strong v-else>Round {{ game.round }}</strong>
+              <span class="dock-turn" :class="{ mine: isMyTurn }">
+                {{ game.winner ? `${game.winner} win` : isMyTurn ? 'Your turn' : ownParty && !ownParty.alive ? 'Defeated' : `${activeParty?.name || 'Next'}'s turn` }}
+              </span>
+              <button type="button" class="dock-details" :aria-expanded="mobileDetailsOpen"
+                @click="mobileDetailsOpen = !mobileDetailsOpen">{{ mobileDetailsOpen ? 'Close' : 'Details' }}</button>
+            </div>
+            <p v-if="ownParty?.id === 'frodo' && game.ringHolder === 'frodo' && !atMountDoom && milesFromMountDoom !== null" class="dock-hint">
+              Mount Doom · about {{ Math.round(milesFromMountDoom) }} miles away
+            </p>
+            <div v-if="isMyTurn && !game.winner" class="dock-actions">
+              <template v-if="movementMode">
+                <button class="gold-button" type="button"
+                  :disabled="!movementPreview || movementPreview.remaining < -0.0001 || isSubmitting" @click="confirmMove">
+                  {{ movementPreview
+                    ? `Confirm · ${movementPreview.miles.toFixed(0)} mi · ${movementPreview.movementPoints.toFixed(1)} pts`
+                    : movementPreviewLoading ? 'Calculating…' : 'Tap where to go' }}
+                </button>
+                <button class="action-button" type="button" @click="cancelMove">Cancel</button>
+              </template>
+              <template v-else>
+                <button v-if="canMove" class="gold-button" type="button" :disabled="isSubmitting" @click="startMove">➜ Move</button>
+                <template v-if="!ownParty.attacked">
+                  <button v-for="target in contactTargets" :key="target.id" class="action-button dock-attack" type="button"
+                    :disabled="isSubmitting" @click="attack(target.id)">⚔ {{ target.name }}</button>
+                </template>
+                <button v-if="canDestroyRing" class="action-button danger-button" type="button"
+                  :disabled="isSubmitting" @click="destroyRing">Destroy the Ring</button>
+                <button class="action-button" type="button" :disabled="isSubmitting" @click="endTurn">End turn</button>
+              </template>
+            </div>
+          </div>
         </section>
+        <aside v-if="mobileDetailsOpen" class="mobile-sheet" aria-label="Campaign details">
+          <template v-if="ownParty">
+            <p class="eyebrow">{{ ownParty.team }} · {{ ownParty.army }}</p>
+            <dl class="character-stats">
+              <div><dt>POSITION</dt><dd>{{ positionLabel }}</dd></div>
+              <div><dt>MOVEMENT</dt><dd>{{ ownParty.movementRemaining.toFixed(1) }} / {{ ownParty.movementMax }}</dd></div>
+              <div><dt>ATTACK</dt><dd>{{ attackDice(ownParty) }} {{ attackDice(ownParty) === 1 ? 'die' : 'dice' }}</dd></div>
+              <div><dt>DEFENSE</dt><dd>{{ defenseDice(ownParty) }} {{ defenseDice(ownParty) === 1 ? 'die' : 'dice' }}</dd></div>
+              <div v-if="['frodo', 'sauron'].includes(ownParty.id)"><dt>RING</dt><dd>{{ game.ringHolder === 'frodo' ? `With ${ringBearerName}` : game.ringHolder === 'destroyed' ? 'Destroyed' : 'Captured by Sauron' }}</dd></div>
+            </dl>
+            <div v-if="movementPreview" class="sheet-section">
+              <p class="eyebrow">MOVE COST</p>
+              <p v-for="segment in movementPreview.segments" :key="`${segment.terrain}-${segment.miles}`">
+                {{ segment.terrain }} · {{ segment.miles.toFixed(1) }} mi · {{ segment.movementPoints.toFixed(1) }} pts
+              </p>
+              <p v-if="movementPreview.riverCrossings">{{ movementPreview.riverCrossings }} river crossing{{ movementPreview.riverCrossings === 1 ? '' : 's' }} (+1 pt each)</p>
+            </div>
+          </template>
+          <div class="sheet-section">
+            <p class="eyebrow">STRONGHOLDS</p>
+            <p v-for="city in game.objectives" :key="city.id"><span>{{ city.name }} · {{ garrison(city) }}</span><small :class="ownerClass(city.owner)">{{ city.owner }}</small></p>
+          </div>
+          <div class="sheet-section">
+            <p class="eyebrow">PARTIES</p>
+            <p v-for="party in game.parties" :key="party.id" :class="{ active: party.id === game.activeCharacter }">
+              <span>{{ party.name }}</span><small>{{ party.units === null ? 'Hidden' : party.alive ? `${party.units}/${party.initialUnits}` : 'Fallen' }}</small>
+            </p>
+          </div>
+          <div class="sheet-section">
+            <p class="eyebrow">RECENT EVENTS</p>
+            <p v-for="(event, index) in game.events.slice(-5).reverse()" :key="`${index}-${event}`" class="sheet-event">{{ event }}</p>
+          </div>
+        </aside>
         <aside v-if="currentView === 'character'" class="character-sidebar">
           <button class="back-link" type="button" @click="currentView = 'campaign'">← Shared campaign</button>
           <template v-if="ownParty">
+            <img v-if="hasPortrait(ownParty.name)" class="character-portrait" :src="portraitUrl(ownParty.name)"
+              :alt="ownParty.name" @error="markPortraitMissing(ownParty.name)" />
             <p class="eyebrow">{{ ownParty.team }}</p>
             <h1>{{ ownParty.name }}</h1>
             <p class="active-party-label">{{ ownParty.army }} · {{ ownParty.units }}/{{ ownParty.initialUnits }} units</p>
             <dl class="character-stats">
-              <div><dt>POSITION</dt><dd>{{ currentPosition?.name || `${ownParty.x?.toFixed(1)}, ${ownParty.y?.toFixed(1)}` }}</dd></div>
+              <div><dt>POSITION</dt><dd>{{ positionLabel }}</dd></div>
               <div><dt>MOVEMENT</dt><dd>{{ ownParty.movementRemaining.toFixed(1) }} / {{ ownParty.movementMax }} points</dd></div>
-              <div><dt>ATTACK</dt><dd>3d6 + {{ ownParty.attackBoost }}</dd></div>
-              <div><dt>ARMOR CLASS</dt><dd>{{ ownParty.armorClass }}</dd></div>
-              <div v-if="['frodo', 'sauron'].includes(ownParty.id)"><dt>RING</dt><dd>{{ game.ringHolder === 'frodo' ? 'With Frodo' : game.ringHolder === 'destroyed' ? 'Destroyed' : 'Captured by Sauron' }}</dd></div>
+              <div><dt>ATTACK</dt><dd>{{ attackDice(ownParty) }} {{ attackDice(ownParty) === 1 ? 'die' : 'dice' }}{{ ownParty.attackBoost ? ` (+${ownParty.attackBoost} each)` : '' }}</dd></div>
+              <div><dt>DEFENSE</dt><dd>{{ defenseDice(ownParty) }} {{ defenseDice(ownParty) === 1 ? 'die' : 'dice' }}</dd></div>
+              <div v-if="['frodo', 'sauron'].includes(ownParty.id)"><dt>RING</dt><dd>{{ game.ringHolder === 'frodo' ? `With ${ringBearerName}` : game.ringHolder === 'destroyed' ? 'Destroyed' : 'Captured by Sauron' }}</dd></div>
             </dl>
             <div v-if="isMyTurn" class="character-actions">
               <button class="gold-button" type="button" :disabled="!canMove || isSubmitting" @click="startMove">➜　Move</button>
@@ -1144,18 +2066,22 @@ onBeforeUnmount(() => {
               <p v-else-if="movementPreviewLoading" class="move-preview-loading">Calculating terrain costs…</p>
               <section v-if="contactTargets.length" class="battle-panel" aria-label="Battle actions">
                 <p class="attack-title">BATTLE · DIRECT CONTACT</p>
-                <p class="battle-explainer">Roll 3d6 plus your attack bonus against the target's armor.</p>
+                <p class="battle-explainer">
+                  Each side rolls one die per unit; a leader alone, or a stronghold with no garrison, rolls one.
+                  The higher total wins and ties go to the defender. The loser loses one unit; with none left, the leader falls
+                  or the stronghold is captured. One attack per turn.
+                </p>
                 <button v-for="target in contactTargets" :key="target.id" class="battle-button" type="button"
                   :disabled="ownParty.attacked || isSubmitting" @click="attack(target.id)">
                   <strong>⚔ {{ target.kind === 'city' ? 'Attack stronghold' : 'Resolve battle' }}</strong>
-                  <span>{{ target.label }} · 3d6 + {{ ownParty.attackBoost }} vs AC {{ target.armorClass }}</span>
+                  <span>{{ target.label }} · your {{ attackDice(ownParty) }} vs {{ target.defenseDice ?? '?' }} {{ target.defenseDice === 1 ? 'die' : 'dice' }}</span>
                 </button>
               </section>
               <p v-else class="battle-hint">To battle, move onto an enemy party or stronghold. Then resolve the attack here.</p>
               <button class="action-button" type="button" :disabled="isSubmitting" @click="endTurn">Ⅱ　End turn</button>
             </div>
             <p v-else class="turn-notice">{{ ownParty.alive ? `Waiting for ${activeParty?.name || game.activeTeam}'s turn.` : 'This character has been defeated.' }}</p>
-            <p v-if="ownParty.id === 'frodo'" class="ring-warning">A successful attack on Frodo captures the Ring for Sauron.</p>
+            <p v-if="ownParty.id === 'frodo'" class="ring-warning">If {{ ownParty.name }} falls in battle, Sauron captures the Ring. The Hobbits take losses first.</p>
           </template>
         </aside>
       </section>
@@ -1219,7 +2145,11 @@ onBeforeUnmount(() => {
 .eyebrow,.setup-label,.welcome-card label,.invite-panel label { display: block; color: #aeb8a9; font-size: 9px; font-weight: 700; letter-spacing: 1.5px; }
 .game-app h1 { margin: 8px 0; color: #f2efe4; font: 600 26px/1.1 'Barlow Condensed', sans-serif; }
 .muted-copy { color: var(--muted); font-size: 11px; line-height: 1.55; }
-.welcome-screen { flex: 1; display: grid; place-items: center; padding: 24px 16px; background: linear-gradient(#101b20b8,#101b20d9), url('/map-assets/middle-earth/map.png') center / cover; }
+.welcome-screen { flex: 1; display: grid; place-items: center; padding: 24px 16px; background: linear-gradient(#101b20b8,#101b20d9), url('/map-assets/middle-earth/map.webp') center / cover; }
+.thrones-link { width: 100%; margin-top: 16px; display: grid; gap: 3px; padding: 11px 14px; border: 1px solid #7a3a2e; border-radius: 10px; background: linear-gradient(90deg, #2a1417, #1b1a1f); color: #f2dfb4; text-align: left; cursor: pointer; font: inherit; }
+.thrones-link strong { font: 600 15px 'Cinzel', 'Barlow Condensed', serif; letter-spacing: 1px; }
+.thrones-link small { color: #c7a98d; font-size: 11px; }
+.thrones-link:hover { border-color: #c79a4c; }
 .welcome-card { width: min(100%, 560px); padding: 32px clamp(22px, 6vw, 78px) 25px; border: 1px solid #927743; border-radius: 17px; background: #142329ec; box-shadow: 0 24px 70px #080f13aa; text-align: center; }
 .ring-emblem { width: 48px; height: 48px; display: grid; place-items: center; margin: 0 auto 10px; border: 1px solid var(--gold); border-radius: 50%; }
 .ring-emblem span { width: 16px; height: 16px; border: 4px solid var(--gold); border-radius: 50%; box-shadow: 0 0 9px #d6b66f77; }
@@ -1269,7 +2199,7 @@ onBeforeUnmount(() => {
 .setup-map { flex: 1; display: grid; place-items: center; padding: 18px; }
 .game-map-world { position: relative; width: min(100%, 1600px); aspect-ratio: 1774 / 887; }
 .game-map-world>img { display: block; width: 100%; height: 100%; user-select: none; }
-.map-icon-marker { position: absolute; z-index: 2; width: 0; height: 0; transform: translate(-50%,-50%); }
+.map-icon-marker { position: absolute; z-index: 2; width: 0; height: 0; transform: translate(-50%,-50%) scale(var(--marker-scale, 1)); }
 .map-icon-city { z-index: 1; }
 .map-icon-marker.active { z-index: 4; }
 .map-icon-marker.own { z-index: 3; }
@@ -1283,9 +2213,15 @@ onBeforeUnmount(() => {
 .map-icon-ring-site { z-index: 2; }
 .map-icon-marker.active .campaign-party-icon { outline: 2px solid #f3df9e; outline-offset: 3px; }
 .map-icon-marker.own .campaign-party-icon { box-shadow: 0 0 0 5px #f4de7b4a,0 2px 7px #101b20; }
-.objective-pin { width: 14px; height: 14px; border: 2px solid #f0dfab; border-radius: 3px; background: #4a9283; }
-.objective-pin.dark,.stronghold-icon.dark { background: #a65949; }
-.stronghold-icon { width: 15px; height: 15px; border: 2px solid #f3e7c1; border-radius: 3px; background: #458675; box-shadow: 0 1px 4px #101b20; }
+/* Strongholds: a small keep in team colors, with one pip per garrison unit underneath. */
+.stronghold-icon { position: relative; width: 20px; height: 20px; border: 0; background: transparent; filter: drop-shadow(0 1px 2px #101b20); }
+.stronghold-icon svg { width: 100%; height: 100%; display: block; overflow: visible; }
+.stronghold-icon .keep { fill: #3f8a78; stroke: #f3e7c1; stroke-width: 1.4; stroke-linejoin: round; }
+.stronghold-icon.dark .keep { fill: #a65949; }
+.garrison-pips { position: absolute; top: 100%; left: 50%; display: flex; gap: 2px; margin-top: 1px; transform: translateX(-50%); pointer-events: none; }
+.garrison-pips i { width: 4px; height: 4px; border-radius: 50%; background: #f3e7c1; box-shadow: 0 0 0 1px #101b20aa; }
+.garrison-pips i.lost { background: transparent; box-shadow: inset 0 0 0 1px #f3e7c1, 0 0 0 1px #101b2066; }
+.objective-pin { width: 18px; height: 18px; }
 .map-icon-marker button:focus-visible { outline: 2px solid #fff0a7; outline-offset: 3px; }
 .map-marker-info { position: absolute; top: 19px; left: 0; z-index: 1; display: grid; gap: 4px; min-width: max-content; max-width: 190px; padding: 7px 9px; border: 1px solid #697b6d; border-radius: 5px; background: #101b20f2; color: #e6ebdf; box-shadow: 0 3px 12px #080f13aa; transform: translateX(-50%); pointer-events: auto; }
 .map-marker-info strong { font-size: 10px; }
@@ -1304,6 +2240,9 @@ onBeforeUnmount(() => {
 .seat-option { border-color: transparent; border-radius: 0; border-top-color: #254c43; cursor: pointer; }
 .seat-option.chosen { background: #23453b; box-shadow: inset 0 0 0 1px #d4b366; }
 .seat-option.unavailable { opacity: .55; cursor: not-allowed; }
+.portrait { width: 100%; height: 100%; display: block; border-radius: 50%; object-fit: cover; }
+.seat-avatar, .host-party-pin, .campaign-party-icon { overflow: hidden; }
+.character-portrait { width: 96px; height: 96px; margin: 6px 0 4px; border: 2px solid #ba9d5a; border-radius: 50%; object-fit: cover; }
 .seat-avatar { width: 34px; height: 34px; flex: none; display: grid; place-items: center; border: 1px solid #ba9d5a; border-radius: 50%; background: #33776f; color: #f4e3b5; font-weight: 700; }
 .dark-group .seat-avatar,.lobby-team.dark-group .seat-avatar { background: #9d5548; }
 .seat-details { min-width: 0; display: grid; gap: 5px; }
@@ -1312,15 +2251,19 @@ onBeforeUnmount(() => {
 .seat-status { display: flex; align-items: center; gap: 7px; margin-left: auto; color: #aab7b0; font-size: 9px; text-align: right; }
 .seat-status i.connected { background: #8fc69f; }
 .seat-card>.gold-button { display: block; width: min(100%,400px); margin: 0 auto; }
-.lobby-screen { flex: 1; min-height: 0; overflow-y: auto; padding: 16px clamp(14px,4vw,48px) 22px; text-align: center; background: linear-gradient(#0f1b20a8,#0f1b20db), url('/map-assets/middle-earth/map.png') center / cover; }
+.lobby-screen { flex: 1; min-height: 0; overflow-y: auto; padding: 16px clamp(14px,4vw,48px) 22px; text-align: center; background: linear-gradient(#0f1b20a8,#0f1b20db), url('/map-assets/middle-earth/map.webp') center / cover; }
 .lobby-screen>h1 { margin: 4px 0 10px; text-align: center; font: 600 18px Georgia,serif; }
-.invite-panel { min-height: 85px; display: grid; grid-template-columns: 1fr 1fr; margin: 0 auto 18px; border: 1px solid #3c5353; border-radius: 10px; background: #122126ec; text-align: left; }
+.invite-panel { min-height: 85px; display: grid; grid-template-columns: 1fr 1fr auto; margin: 0 auto 18px; border: 1px solid #3c5353; border-radius: 10px; background: #122126ec; text-align: left; }
 .invite-panel>div { position: relative; display: grid; align-content: center; gap: 6px; padding: 12px 20px; }
 .invite-panel>div+div { border-left: 1px solid #35494a; }
 .invite-panel strong { color: #dfe5dc; font-size: 13px; }
 .invite-panel .invite-code { color: #e2c36e; font-size: 24px; letter-spacing: 1px; }
 .invite-panel button { position: absolute; right: 12px; padding: 7px 13px; border: 1px solid #4a6262; border-radius: 6px; background: #1b2a2e; color: #e5e9e2; cursor: pointer; }
 .invite-panel small { position: absolute; right: 14px; top: 50%; color: #bac4bd; font-size: 10px; transform: translateY(-50%); }
+.invite-panel .invite-qr { justify-items: center; gap: 4px; padding: 10px 14px; }
+.invite-qr span { width: 112px; height: 112px; display: block; border-radius: 6px; overflow: hidden; }
+.invite-qr span :deep(svg) { width: 100%; height: 100%; display: block; }
+.invite-panel .invite-qr small { position: static; transform: none; }
 .lobby-teams { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; text-align: left; }
 .lobby-team { min-height: 290px; overflow: hidden; border: 1px solid #35675c; border-radius: 10px; background: #10251fe8; }
 .lobby-team.dark-group { border-color: #72443a; background: #2a201fe8; }
@@ -1331,6 +2274,8 @@ onBeforeUnmount(() => {
 .lobby-hint { margin: 8px 0; }
 .campaign-layout { flex: 1; min-height: 0; display: grid; grid-template-columns: 250px minmax(0,1fr); }
 .campaign-sidebar { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; padding: 19px 13px 12px; border-right: 1px solid #304145; background: #132127; }
+/* Cards keep their full height (the sidebar scrolls) so no party or stronghold row is clipped. */
+.campaign-sidebar > * { flex-shrink: 0; }
 .campaign-sidebar h1 { margin: 1px 0 0; font-size: 28px; }
 .active-party-label { margin: 0 0 2px; color: #afc0b4; font-size: 10px; }
 .sidebar-card { overflow: hidden; border: 1px solid #35675c; border-radius: 8px; background: #11251f; }
@@ -1351,17 +2296,21 @@ onBeforeUnmount(() => {
 .campaign-mobile-heading { display: none; }
 .play-map-stage { flex: 1; display: grid; place-items: center; touch-action: none; user-select: none; }
 .play-map-stage.move-mode { cursor: crosshair; }
-.play-map-world { width: min(100%,1600px); cursor: inherit; transform-origin: center; will-change: transform; }
+.play-map-world { width: min(100%,1600px); cursor: inherit; transform-origin: center; }
+.play-map-world.gesturing { will-change: transform; }
 .play-map-world img { pointer-events: none; }
+.play-map-world > img.map-hd-tile { position: absolute; max-width: none; user-select: none; }
 .map-zoom-controls { position: absolute; z-index: 8; top: 10px; right: 10px; display: grid; grid-template-columns: 38px 55px 38px; gap: 4px; padding: 5px; border: 1px solid #536464; border-radius: 7px; background: #101b20eF; box-shadow: 0 3px 12px #080f1399; }
 .map-zoom-controls button { min-height: 34px; border: 1px solid #405456; border-radius: 4px; background: #1d2c30; color: #e6e9df; font: 700 17px 'DM Sans',sans-serif; cursor: pointer; }
 .map-zoom-controls button:disabled { opacity: .45; cursor: not-allowed; }
 .map-zoom-controls span { display: grid; place-items: center; color: #dbc783; font-size: 9px; font-weight: 700; }
 .map-zoom-controls button:last-child { grid-column: 1 / -1; min-height: 27px; font-size: 9px; }
-.region-label { position: absolute; z-index: 0; transform: translate(-50%,-50%); color: #fff4d9; font: 700 clamp(10px,1.3vw,20px) 'Barlow Condensed',sans-serif; text-shadow: 0 1px 3px #111,1px 0 3px #111,-1px 0 3px #111; pointer-events: none; }
-.detail-place-label { position: absolute; z-index: 1; padding: 1px 3px; border-radius: 3px; background: #101b20b8; color: #f3ead0; font: 600 clamp(7px,.65vw,10px) 'DM Sans',sans-serif; text-shadow: 0 1px 2px #101b20; transform: translate(-50%,-50%); white-space: nowrap; pointer-events: none; }
+.region-label { position: absolute; z-index: 0; transform: translate(-50%,-50%) scale(var(--marker-scale, 1)); color: #fff4d9; font: 700 clamp(10px,1.3vw,20px) 'Barlow Condensed',sans-serif; text-shadow: 0 1px 3px #111,1px 0 3px #111,-1px 0 3px #111; pointer-events: none; }
+.detail-place-label { position: absolute; z-index: 1; padding: 1px 3px; border-radius: 3px; background: #101b20b8; color: #f3ead0; font: 600 clamp(7px,.65vw,10px) 'DM Sans',sans-serif; text-shadow: 0 1px 2px #101b20; transform: translate(-50%,-50%) scale(var(--marker-scale, 1)); white-space: nowrap; pointer-events: none; }
 .detail-place-label.landmark { color: #d3ded5; font-size: clamp(6px,.55vw,8px); font-weight: 500; }
-.destination-marker { position: absolute; z-index: 4; width: 18px; height: 18px; border: 3px solid #f2d578; border-radius: 50%; box-shadow: 0 0 0 4px #f2d57855; transform: translate(-50%,-50%); pointer-events: none; }
+.destination-marker { position: absolute; z-index: 4; width: 18px; height: 18px; border: 3px solid #f2d578; border-radius: 50%; box-shadow: 0 0 0 4px #f2d57855; transform: translate(-50%,-50%) scale(var(--marker-scale, 1)); pointer-events: none; }
+.map-locate { grid-column: 1 / -1; }
+.mobile-dock, .mobile-sheet { display: none; }
 .map-instruction { position: absolute; top: 12px; left: 50%; padding: 8px 12px; border: 1px solid #62765c; border-radius: 6px; background: #142229ed; color: #f1e4bb; font-size: 11px; transform: translateX(-50%); }
 .map-footer { display: flex; justify-content: space-between; gap: 10px; padding: 10px 14px; border-top: 1px solid #2b3b40; color: #a2b0a7; font-size: 9px; }
 .map-footer b { margin-left: 5px; color: #d8c17c; }
@@ -1371,6 +2320,94 @@ onBeforeUnmount(() => {
 .ring-action-strip strong { color: #e5cb7e; font-size: 9px; letter-spacing: 1px; }
 .ring-action-strip span { color: #c4c6b5; font-size: 9px; }
 .ring-action-strip .action-button { width: auto; min-width: 180px; padding: 0 12px; }
+.last-battle { display: grid; gap: 6px; padding: 9px 13px; border-top: 1px solid #2b3b40; background: #172529; color: #c4c6b5; font-size: 9px; }
+.last-battle>strong { color: var(--gold); letter-spacing: 1px; }
+.battle-sides { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.battle-sides>div { display: grid; gap: 3px; }
+.battle-sides>b { color: #7f8d86; font-weight: 600; }
+.dice-row { display: flex; gap: 4px; }
+.die { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 5px; background: #e9dfc4; color: #2a2420; font: 700 12px 'DM Sans',sans-serif; font-style: normal; box-shadow: inset 0 -2px 0 #0002; }
+.die.defender { background: #a85b4b; color: #fff3e6; }
+.battle-outcome { color: #e0d6bd; }
+.battle-overlay { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 16px; background: #0b1316b3; }
+.battle-card { width: min(520px, 100%); padding: 18px 20px; border: 1px solid #3a4f53; border-radius: 12px; background: #132127; color: #e8eceb; box-shadow: 0 12px 40px #000a; }
+.battle-card-title { margin: 0 0 14px; color: var(--gold); font-size: 11px; font-weight: 700; letter-spacing: 1.5px; text-align: center; }
+.battle-card-sides { display: grid; grid-template-columns: 1fr 36px 1fr; align-items: start; gap: 8px; }
+.battle-card-side { display: grid; justify-items: center; gap: 3px; text-align: center; }
+.battle-card-side strong { font-size: 16px; }
+.battle-card-side small { color: #9ba6a0; font-size: 11px; }
+.battle-card-army { margin: 4px 0 10px; color: #cdd6cf; font-size: 12px; }
+.battle-card-vs { padding-top: 64px; color: #7f8d86; font-size: 12px; text-align: center; }
+.battle-card-dice { display: flex; flex-wrap: wrap; justify-content: center; align-content: start; gap: 6px; max-width: 168px; min-height: 84px; }
+.battle-card-total { margin-top: 8px; color: var(--gold); font-weight: 700; font-size: 15px; }
+.battle-card-total.hidden { visibility: hidden; }
+.battle-die { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 9px; font: 700 21px 'DM Sans',sans-serif; font-style: normal; transition: transform .3s, opacity .4s, box-shadow .3s; }
+.battle-die-attacker { background: #e9dfc4; color: #2a2420; }
+.battle-die-defender { background: #a85b4b; color: #fff3e6; }
+.battle-die.rolling { animation: battle-tumble .14s linear infinite; }
+.battle-die.won { box-shadow: 0 0 0 3px var(--gold); transform: scale(1.06); }
+.battle-die.lost { opacity: .35; transform: scale(.88); }
+.battle-card-result { min-height: 20px; margin: 14px 0; color: #e0d6bd; font-size: 13px; text-align: center; }
+.battle-card-actions { display: flex; gap: 10px; justify-content: center; }
+.battle-card-actions button { width: auto; min-width: 140px; padding: 0 14px; }
+@keyframes battle-tumble { 0% { transform: rotate(0) } 50% { transform: rotate(14deg) scale(1.06) } 100% { transform: rotate(-14deg) } }
+@media (prefers-reduced-motion: reduce) { .battle-die.rolling { animation: none; } }
+.rules-toggle { min-height: 26px; padding: 0 10px; border: 1px solid #3f5458; border-radius: 13px; background: transparent; color: #c9d2cb; font: 600 10px 'DM Sans',sans-serif; letter-spacing: .5px; cursor: pointer; }
+.rules-toggle:hover, .rules-toggle[aria-expanded="true"] { border-color: var(--gold); color: var(--gold); }
+.rules-backdrop { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; padding: 16px; background: rgba(6, 12, 15, .72); }
+.rules-sheet { width: min(560px, 100%); max-height: min(86vh, 760px); overflow-y: auto; padding: 18px 22px 20px; border: 1px solid #4a5d55; border-radius: 12px; background: #142228; color: #d6ddd6; font-size: 13px; line-height: 1.5; box-shadow: 0 18px 50px rgba(0,0,0,.5); }
+.rules-sheet header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.rules-sheet h2 { margin: 0; color: var(--gold); font-size: 20px; }
+.rules-sheet header button { width: 32px; height: 32px; border: 0; background: transparent; color: #aab8ad; font-size: 22px; cursor: pointer; }
+.rules-sheet h3 { margin: 14px 0 4px; color: #e2d096; font-size: 11px; letter-spacing: 1.2px; text-transform: uppercase; }
+.rules-sheet ul { margin: 0; padding-left: 18px; }
+.rules-sheet li { margin: 3px 0; }
+.rules-sheet b { color: #f0e6c8; }
+.player-count { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 12px; }
+.player-count button, .representative-picker button { padding: 7px 8px; border: 1px solid #3f5458; border-radius: 6px; background: #0e1a1f; color: #c9d2cb; font: 600 12px 'DM Sans',sans-serif; cursor: pointer; text-align: center; }
+.player-count button small { display: block; margin-top: 2px; color: #8e9c94; font-size: 9px; font-weight: 500; }
+.player-count button.selected, .representative-picker button.selected { border-color: var(--gold); background: #2c3427; color: #f0e2ad; }
+.roster-row strong small { color: #8e9c94; font-size: 10px; font-weight: 500; }
+.representative-picker { margin: 4px 0 14px; }
+.representative-picker div { display: flex; flex-wrap: wrap; gap: 6px; }
+.representative-picker button { min-width: 78px; }
+.sound-toggle { width: 26px; height: 26px; display: inline-grid; place-items: center; padding: 0; border: 1px solid #3f5458; border-radius: 50%; background: transparent; font-size: 12px; line-height: 1; cursor: pointer; }
+.sound-toggle[aria-pressed="false"] { opacity: .6; }
+.tv-toggle[aria-pressed="true"] { border-color: var(--gold); color: var(--gold); }
+/* "While you were away" */
+.away-recap { position: absolute; top: 12px; left: 50%; z-index: 6; width: min(360px, calc(100% - 24px)); max-height: calc(100% - 24px); overflow-y: auto; padding: 12px 14px 14px; border: 1px solid #5d6b55; border-radius: 10px; background: #142228f2; color: #d6ddd6; font-size: 12px; line-height: 1.45; text-align: left; box-shadow: 0 10px 30px #0008; transform: translateX(-50%); cursor: default; }
+.away-recap header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.away-recap header strong { color: var(--gold); font-size: 13px; letter-spacing: .5px; }
+.away-recap header button { width: 28px; height: 28px; border: 0; background: transparent; color: #aab8ad; font-size: 20px; cursor: pointer; }
+.away-recap ul { margin: 0 0 10px; padding-left: 16px; }
+.away-recap li { margin: 3px 0; }
+.away-recap .away-more { margin: 0 0 4px; color: #8e9c94; font-size: 11px; }
+.away-recap .gold-button { width: 100%; }
+/* TV mode: bigger type, a larger battle card, and a map that glides to the active party. */
+.tv-mode .play-map-world { transition: transform .9s ease; }
+.tv-mode .play-map-world.gesturing { transition: none; }
+.tv-mode .campaign-layout { grid-template-columns: 330px minmax(0,1fr); }
+.tv-mode .campaign-sidebar h1 { font-size: 38px; }
+.tv-mode .active-party-label { font-size: 16px; }
+.tv-mode .sidebar-card h2 { font-size: 12px; }
+.tv-mode .party-list-row { min-height: 38px; font-size: 15px; }
+.tv-mode .party-list-row small { font-size: 12px; }
+.tv-mode .recent-events { font-size: 13px; }
+.tv-mode .map-footer { display: none; }
+.tv-mode .battle-card { width: min(780px, 100%); padding: 28px 32px; font-size: 18px; }
+.tv-mode .battle-card-title { font-size: 14px; }
+.tv-mode .battle-card-side strong { font-size: 24px; }
+.tv-mode .battle-die { width: 52px; height: 52px; font-size: 28px; }
+.tv-mode .battle-card-dice { max-width: 240px; gap: 8px; }
+.tv-mode .battle-card-total { font-size: 22px; }
+.tv-mode .battle-card-result { font-size: 19px; }
+/* Music: just a small icon in the header, on the main (wide) screen only. */
+.music-toggle { width: 26px; height: 26px; display: inline-grid; place-items: center; padding: 0; border: 1px solid #3f5458; border-radius: 50%; background: transparent; color: #9ba6a0; font-size: 13px; line-height: 1; cursor: pointer; }
+.music-toggle:hover { color: var(--gold); }
+.music-toggle.playing { border-color: var(--gold); color: var(--gold); }
+@media (max-width: 760px) {
+  .music-toggle { display: none !important; }
+}
 .character-layout { grid-template-columns: minmax(0,1fr) 300px; }
 .character-sidebar { overflow-y: auto; padding: 16px 15px; border-left: 1px solid #304145; background: #132127; }
 .back-link { margin: 0 0 17px; padding: 5px 0; border: 0; background: transparent; color: #d6b66f; font: 600 11px 'DM Sans',sans-serif; cursor: pointer; }
@@ -1445,12 +2482,45 @@ onBeforeUnmount(() => {
   .campaign-sidebar { display: none; }
   .campaign-mobile-heading { min-height: 39px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 12px; color: #e2d096; font-size: 10px; }
   .campaign-mobile-heading span { overflow: hidden; color: #d2dcd3; text-overflow: ellipsis; white-space: nowrap; }
-  .game-map-panel { flex: 0 0 min(48vh,390px); min-height: 240px; }
-  .play-map-stage { min-height: 0; display: grid; place-items: center; overflow: hidden; overscroll-behavior: contain; touch-action: none; }
-  .play-map-world { width: min(100%,1600px); max-width: none; }
+  /* Phones: the map fills the screen above a compact action dock. */
+  .game-map-panel { flex: 1 1 auto; min-height: 0; }
+  .campaign-mobile-heading, .map-footer, .ring-action-strip, .last-battle, .character-sidebar, .player-bottom-nav { display: none !important; }
+  .game-topbar-title, .map-editor-link { display: none; }
+  .play-map-stage { position: relative; min-height: 0; display: block; overflow: hidden; overscroll-behavior: contain; touch-action: none; }
+  /* The map is as tall as the stage (twice as wide), centered; drag sideways to pan. */
+  .play-map-world { position: absolute; top: 0; left: 50%; height: 100%; width: auto; max-width: none; aspect-ratio: 1774 / 887; translate: -50% 0; }
   .region-label { font-size: 12px; }
-  .campaign-party-icon { width: 26px; height: 26px; font-size: 10px; }
-  .stronghold-icon { width: 14px; height: 14px; }
+  .campaign-party-icon { width: 20px; height: 20px; border-width: 1.5px; font-size: 8px; }
+  .campaign-party-icon.multi-initial { font-size: 7px; }
+  .map-icon-marker.own .campaign-party-icon { box-shadow: 0 0 0 3px #f4de7b55,0 1px 4px #101b20; }
+  .map-icon-marker.active .campaign-party-icon { outline-width: 1.5px; outline-offset: 2px; }
+  .stronghold-icon { width: 13px; height: 13px; }
+  .garrison-pips { gap: 1px; }
+  .garrison-pips i { width: 3px; height: 3px; }
+  .ring-site-icon { width: 16px; height: 16px; border-width: 1.5px; font-size: 12px; box-shadow: 0 0 0 2px #8c492f77; }
+  .map-zoom-controls { top: 8px; right: 8px; grid-template-columns: 32px; gap: 4px; padding: 4px; }
+  .map-zoom-controls button { min-height: 32px; font-size: 16px; }
+  .map-zoom-controls span, .map-zoom-controls button[aria-label="Reset map view"] { display: none; }
+  .map-instruction { top: 8px; padding: 6px 10px; font-size: 10px; }
+  .mobile-dock { position: relative; z-index: 31; display: grid; gap: 6px; flex: none; padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); border-top: 1px solid #314247; background: #111e23; }
+  .dock-status { display: flex; align-items: center; gap: 8px; min-width: 0; color: #cdd6cf; font-size: 11px; }
+  .dock-status strong { color: #f0e2b0; font-size: 13px; }
+  .dock-status span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dock-turn { margin-left: auto; color: #9ba6a0; }
+  .dock-turn.mine { color: #e0c47a; font-weight: 700; }
+  .dock-details { flex: none; height: 26px; padding: 0 10px; border: 1px solid #3f5458; border-radius: 13px; background: transparent; color: #cdd6cf; font: 600 10px 'DM Sans',sans-serif; }
+  .dock-hint { margin: 0; color: #e0c3b3; font-size: 10px; }
+  .dock-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  .dock-actions button { flex: 1 1 0; min-width: 88px; min-height: 40px; margin: 0; padding: 0 8px; font-size: 11px; }
+  .dock-actions .gold-button { flex-grow: 2; }
+  .dock-attack { border-color: #a85b4b; color: #f1d2c6; }
+  .mobile-sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; display: grid; gap: 12px; max-height: 70dvh; overflow-y: auto; padding: 14px 14px calc(96px + env(safe-area-inset-bottom)); border-top: 1px solid #3f5458; border-radius: 14px 14px 0 0; background: #132127; box-shadow: 0 -10px 30px #0009; }
+  .mobile-sheet .eyebrow { margin: 0 0 4px; }
+  .mobile-sheet .character-stats { margin: 0; }
+  .sheet-section p { display: flex; justify-content: space-between; gap: 10px; margin: 0; padding: 5px 0; border-bottom: 1px solid #22343a; color: #d2dcd3; font-size: 11px; }
+  .sheet-section p.active span { color: #e0c47a; }
+  .sheet-section small { color: #9ba6a0; }
+  .sheet-section .sheet-event { display: block; color: #c4c6b5; }
   .map-marker-info { max-width: 150px; padding: 6px 7px; }
   .map-marker-info strong { font-size: 9px; }
   .battle-panel,.battle-hint { grid-column: 1 / -1; }

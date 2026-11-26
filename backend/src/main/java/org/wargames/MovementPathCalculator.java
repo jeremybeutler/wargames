@@ -18,6 +18,17 @@ final class MovementPathCalculator {
     static Result calculate(double startX, double startY, double endX, double endY,
                             double mapWidthMiles, double mountDoomX, double mountDoomY,
                             List<TerrainRegion> regions) {
+        return calculate(startX, startY, endX, endY, mapWidthMiles, mountDoomX, mountDoomY, regions, Map.of());
+    }
+
+    /**
+     * As above, with some terrain rates replaced (terrain key to miles per movement point), for
+     * parties at home in it: the Starks in snow, say. Pass NaN for Mount Doom on maps without it.
+     */
+    static Result calculate(double startX, double startY, double endX, double endY,
+                            double mapWidthMiles, double mountDoomX, double mountDoomY,
+                            List<TerrainRegion> regions, Map<String, Double> rateOverrides) {
+        Rates rates = new Rates(rateOverrides);
         Point start = mapPoint(startX, startY);
         Point end = mapPoint(endX, endY);
         double dx = end.x - start.x;
@@ -26,16 +37,18 @@ final class MovementPathCalculator {
         double distanceMiles = pathLength / MAP_WIDTH * mapWidthMiles;
         if (pathLength <= INTERVAL_EPSILON) {
             return new Result(distanceMiles, 0, 0,
-                destinationTerrain(endX, endY, mountDoomX, mountDoomY, regions), List.of());
+                destinationTerrain(endX, endY, mountDoomX, mountDoomY, regions, rates), List.of());
         }
 
         Map<Terrain, List<Interval>> coverage = new HashMap<>();
         List<Interval> riverCoverage = new ArrayList<>();
         List<Interval> riverTravel = new ArrayList<>();
         List<Crossing> riverIntersections = new ArrayList<>();
-        Point doom = mapPoint(mountDoomX, mountDoomY);
-        Interval mountDoom = circleInterval(start, end, doom, MAP_WIDTH * 0.005);
-        if (mountDoom != null) addIntervals(coverage, Terrain.MOUNT_DOOM, List.of(mountDoom));
+        if (!Double.isNaN(mountDoomX) && !Double.isNaN(mountDoomY)) {
+            Point doom = mapPoint(mountDoomX, mountDoomY);
+            Interval mountDoom = circleInterval(start, end, doom, MAP_WIDTH * 0.005);
+            if (mountDoom != null) addIntervals(coverage, Terrain.MOUNT_DOOM, List.of(mountDoom));
+        }
 
         for (TerrainRegion region : regions) {
             Terrain terrain = Terrain.from(region.getTerrainType());
@@ -86,20 +99,20 @@ final class MovementPathCalculator {
             double next = cuts.get(index);
             if (next - previous <= INTERVAL_EPSILON) continue;
             double midpoint = (previous + next) / 2;
-            Terrain terrain = terrainAt(midpoint, coverage);
+            Terrain terrain = terrainAt(midpoint, coverage, rates);
             double miles = distanceMiles * (next - previous);
-            double movementPoints = miles / terrain.milesPerPoint;
+            double movementPoints = miles / rates.of(terrain);
             terrainMovementPoints += movementPoints;
             appendSegment(segments, terrain, miles, movementPoints);
             previous = next;
         }
-        String destinationTerrain = destinationTerrain(endX, endY, mountDoomX, mountDoomY, regions);
+        String destinationTerrain = destinationTerrain(endX, endY, mountDoomX, mountDoomY, regions, rates);
         return new Result(distanceMiles, terrainMovementPoints + riverCrossings, riverCrossings,
             destinationTerrain, List.copyOf(segments));
     }
 
     private static String destinationTerrain(double x, double y, double mountDoomX, double mountDoomY,
-                                              List<TerrainRegion> regions) {
+                                              List<TerrainRegion> regions, Rates rates) {
         if (sameLocation(x, y, mountDoomX, mountDoomY)) return Terrain.MOUNT_DOOM.key;
         Point target = mapPoint(x, y);
         Terrain terrainAtPoint = Terrain.PLAINS;
@@ -112,7 +125,7 @@ final class MovementPathCalculator {
             for (int index = 0; index < points.size(); index++) {
                 if (distanceToSegment(target, points.get(index),
                         points.get(Math.min(index + 1, points.size() - 1))) <= radius) {
-                    terrainAtPoint = slower(terrainAtPoint, terrain);
+                    terrainAtPoint = slower(terrainAtPoint, terrain, rates);
                 }
             }
         }
@@ -125,21 +138,21 @@ final class MovementPathCalculator {
         coverage.computeIfAbsent(terrain, ignored -> new ArrayList<>()).addAll(intervals);
     }
 
-    private static Terrain terrainAt(double parameter, Map<Terrain, List<Interval>> coverage) {
+    private static Terrain terrainAt(double parameter, Map<Terrain, List<Interval>> coverage, Rates rates) {
         Terrain selected = Terrain.PLAINS;
         for (Map.Entry<Terrain, List<Interval>> entry : coverage.entrySet()) {
             if (entry.getValue().stream().anyMatch(interval ->
                     parameter >= interval.start - INTERVAL_EPSILON
                         && parameter <= interval.end + INTERVAL_EPSILON)) {
-                selected = slower(selected, entry.getKey());
+                selected = slower(selected, entry.getKey(), rates);
             }
         }
         return selected;
     }
 
-    private static Terrain slower(Terrain first, Terrain second) {
-        if (second.milesPerPoint < first.milesPerPoint) return second;
-        if (second.milesPerPoint > first.milesPerPoint) return first;
+    private static Terrain slower(Terrain first, Terrain second, Rates rates) {
+        if (rates.of(second) < rates.of(first)) return second;
+        if (rates.of(second) > rates.of(first)) return first;
         if (second.priority < first.priority) return second;
         return first;
     }
@@ -348,6 +361,13 @@ final class MovementPathCalculator {
 
     private record Point(double x, double y) {}
 
+    /** Miles per movement point for each terrain, with any overrides applied. */
+    private record Rates(Map<String, Double> overrides) {
+        double of(Terrain terrain) {
+            return overrides.getOrDefault(terrain.key, terrain.milesPerPoint);
+        }
+    }
+
     private record Interval(double start, double end) {}
 
     /** Where the path cuts a river line (0..1 along the path) and that stroke's radius in the same units. */
@@ -357,6 +377,8 @@ final class MovementPathCalculator {
         MOUNT_DOOM("mount-doom", 6, 0),
         VOLCANIC("volcanic", 6, 1),
         MOUNTAIN("mountain", 7.5, 2),
+        SNOW("snow", 8, 2),
+        DESERT("desert", 10, 4),
         FOREST("forest", 10, 4),
         RIVER("river", 10, 3),
         PLAINS("plains", 15, 5);

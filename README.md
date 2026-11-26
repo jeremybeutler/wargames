@@ -101,9 +101,46 @@ read-only unless you add a `MAP_EDITOR_TOKEN` environment variable.
 ## Play a campaign
 
 The default page is the War of the Ring lobby. Choose **Host a game** on a laptop,
-set a display name and map scale, and share the generated game code or link.
+set a display name, map scale and player count, and share the generated game
+code or link. **6 players** is the classic game; **8 players** adds the
+expansion: the Elves (Free Peoples, from Lothlórien) and the Ringwraiths
+(Sauron's Forces, led by the Witch-king from Minas Morgul), each with 2 units
+and a home stronghold with a garrison of 2.
 Players open the same app on their phones, enter the code, and claim one of the
-six fixed character seats. The host can start after every seat is filled.
+character seats. Some parties let the player pick who represents them: the
+Hobbits are led by Frodo (default), Sam, Merry or Pippin; Rohan by Théoden,
+Éowyn or Éomer; the Fellowship by Aragorn, Gandalf or Gimli; the Elves by
+Galadriel, Legolas or Arwen. Whoever leads the Hobbits is the Ring-bearer. The
+host can start after every seat is filled.
+Everyone in a game can open a short rule sheet from the **Rules** button in
+the header.
+
+- **Joining:** the lobby shows a QR code for the join link; scan it with a phone
+  camera. (On a local test, open the host page from the network address so the
+  code points somewhere phones can reach.)
+- **While you were away:** when your turn starts, a card lists what happened
+  since your last turn ended on this device.
+- **Sound effects:** dice, battle clashes, a horn for a captured stronghold,
+  and themes for the Ring's fate are synthesized in the browser (no audio
+  files). They're off by default; the speaker button in the header turns them
+  on for that device.
+- **Strongholds** show as keeps in their owner's color with one pip per
+  garrison unit (hollow pips are lost units).
+- **TV mode** (host only): a larger, full-screen view whose map glides to the
+  active party each turn, with a bigger battle card. Hidden parties show the
+  whole map.
+
+Character portraits are optional. Put full-size square originals in
+`assets/portraits/` (kept out of git and deploys), named after the leader in
+lowercase without accents: `frodo.png`, `sam.png`, `merry.png`, `pippin.png`,
+`theoden.png`, `eowyn.png`, `eomer.png`, `aragorn.png`, `gandalf.png`,
+`gimli.png`, `galadriel.png`, `legolas.png`, `arwen.png`, `khamul.png`,
+`saruman.png`, `sauron.png`, `witch-king.png`. Then run
+`python scripts/make_portraits.py` to write 256 × 256 WebP copies to
+`frontend/public/portraits/` (about 12 KB each), which the game loads. They
+appear on map icons, seats and the character panel; a leader without an image
+keeps its initials. Only use images you have the right to publish if that
+folder is deployed.
 Campaign sessions are stored by the Java API. There is no login: hosting or
 joining gives that device a random 256-bit seat secret in an HttpOnly,
 SameSite=Strict cookie scoped to that game's API path (`Secure` when served over
@@ -132,10 +169,30 @@ Turn order is shuffled once when the campaign starts and kept every round.
 Map character and city icons tile when locations overlap; select an icon to
 toggle its information. To battle, move onto an enemy party or stronghold, then
 choose **Resolve battle** or **Attack stronghold** in the character panel.
-Frodo can destroy the Ring on his turn at Mount Doom, including right after
-moving there. Each opposing party at Mount Doom first makes one normal attack
-on him, rolled by the server in turn order; a hit captures the Ring for Sauron,
-and if all miss the Free Peoples win.
+Starting armies: Hobbits 1, Rohan 2, Fellowship 3, Easterlings 1, Uruk-hai 2, Orcs 3
+(expansion: Elves 2, Ringwraiths 2).
+Battles: each side rolls one die per army unit (a leader with no units left
+still rolls one). The higher total wins and ties go to the defender. The loser
+loses exactly one unit, or falls if it had none left. A party attacks at most
+once per turn. Defenders on volcanic ground or Mount Doom subtract 1 from each
+die.
+Strongholds fight the same way with a garrison: The Shire 1, Rohan 2,
+Gondor 3, Rhûn 1, Barad-dûr 3, Isengard 2. Beating a stronghold removes one
+garrison unit; beating one with no garrison left (its bare walls roll one die)
+captures it. Garrisons do not regrow. Every battle plays out on screen as
+rolling dice for all players.
+Mount Doom is a small area: a move that ends within about 25 miles of it (2.5%
+of the map width) lands on the summit. Frodo can destroy the Ring on his turn
+there, including right after moving. Each opposing party on Mount Doom first
+fights him once, in turn order; if Frodo falls (his Hobbits are lost first)
+Sauron captures the Ring,
+and if he survives them all the Free Peoples win. On wide screens, the ♪ button in the
+game header plays background music: `frontend/public/music/theme.mp3` in the
+lobby and setup screens, and `frontend/public/music/ambience.mp3` during the
+campaign. It switches tracks as the screen changes, and each track resumes
+where it left off. That folder is kept out of git and deploys (add your own
+files locally); the button only appears where a file exists, and if one track
+is missing the other plays everywhere.
 Movement, army damage, direct-contact attacks, stronghold capture, hidden
 positions, turn order, Ring capture/destruction, and victory are validated by
 the API. For an internet-hosted game, publish the frontend and API behind the
@@ -143,6 +200,109 @@ same public origin (or route `/api` to the API); the development Vite server
 also listens on the local network for phone testing. For that local test, open
 the host page using Vite's printed **Network** URL rather than `localhost`, so
 the copied join link points to an address the phone can reach.
+
+## The Iron Throne (a Game of Thrones campaign)
+
+A second campaign on a map of Westeros and Essos. Choose **The Iron Throne** at
+the bottom of the War of the Ring home screen (or open `/?thrones=CODE`). Codes
+from either game can be typed into either Join box; the app opens the right one.
+
+The host sets the map width (2,500 miles by default), the last round (20) and
+whether the server plays the Dead when no one claims them. 3 to 8 players each
+claim a house on their own device and may choose which heir leads first:
+House Stark, Lannister, Targaryen, Baratheon, Greyjoy, Tyrell, Martell, or the
+Dead. Houses nobody claims become neutral castles. Every house plays for itself.
+
+The in-game **Rules** button has the full rules. In short:
+
+- **Turns.** Collect gold (1 a castle, 2 for your own seat, 3 for King's
+  Landing), move once, then attack once. Spend gold on levies, fortifications,
+  sellswords in Braavos or Pentos, or an Iron Bank loan.
+- **Movement and battle** work as in War of the Ring, with snow, desert,
+  rivers, mountains, forest and Valyria's volcanic ground. Armies sail from
+  port to port, using the whole turn. The Greyjoys sail from any coast, and
+  dragons fly. The Wall can only be crossed through a castle you hold.
+- **Succession.** When a leader falls, the next heir rises at the house's seat.
+  A house is out when its line ends or it holds no castle.
+- **Pacts.** Allies cannot attack each other and defend together. Breaking a
+  pact and attacking the same turn is a Red Wedding (+2 per die), and makes you
+  an oathbreaker for 3 rounds.
+- **Seasons.** Winter arrives in round 8 (Fate cards can bring it sooner). Snow
+  creeps south, and the Dead march on the Wall. The Night King dies only to
+  dragons, Valyrian steel (Jon, Jaime or Arya), or Dragonstone's dragonglass.
+- **Each house** has a passive ability and a once-per-game power. A Fate card
+  is drawn every round after the first.
+- **Winning.** Hold King's Landing for 3 rounds in a row (allies share the win as
+  Hand of the King), hold 7 of the 9 great seats, slay the Night King while
+  holding 3, or be the last house standing. The Dead win by taking King's
+  Landing or 5 castles south of the Wall. After the last round, the most great
+  seats wins.
+
+The rules are in `backend/src/main/java/org/wargames/ThronesGame.java`, with
+their fixed data in `ThronesRules.java`, the server's Dead player in
+`ThronesDeadAi.java`, and tests in `ThronesGameTest.java`. The API is under
+`/api/thrones`. Saved games share the `game_sessions` table, marked by a
+`game_type` column.
+
+Portraits are optional, as for War of the Ring. Put square images in
+`frontend/public/portraits/thrones/`, named after the leader in lowercase with
+hyphens: `ned-stark.png`, `jon-snow.png`, `daenerys-targaryen.png`,
+`night-king.png`, and so on. A leader without one shows the house sigil.
+
+### The Westeros map
+
+The art is `maps/westeros/source-art.webp` (2:1, like the Middle-earth map).
+Place positions and the line of the Wall are in `maps/westeros/design.json`, in
+map percentages, sitting on the castles painted in the art. After changing
+either file, rebuild:
+
+```sh
+python scripts/build_westeros_map.py                       # map.png/map.webp and westeros-map.json
+python scripts/generate_terrain.py --profile westeros     # terrain strokes and land/water mask
+```
+
+The second command writes `backend/src/main/resources/westeros-terrain.json` and
+`westeros-land-mask.png`. The mask is used for sailing. Add `--preview
+terrain/westeros-preview.png` to see what was detected. The source art is
+1774 × 887, so `map.png` is a sharpened 4096 × 2048 enlargement and close
+zooms look soft. Replace `source-art.webp` with a larger 2:1 version (an AI
+upscale, say) to sharpen it. The Iron Throne screen does not load HD tiles yet.
+
+## Quick test games
+
+To try a change with every seat filled, run:
+
+```powershell
+.\scripts\test-game.ps1                  # 6 players, waits in the lobby
+.\scripts\test-game.ps1 -Players 8 -Start
+.\scripts\test-game.ps1 -Leaders @{ frodo = 'Sam'; aragorn = 'Gandalf' }
+```
+
+It starts the API (port 8080) and the Vite dev server (port 5173) in their own
+windows if they aren't already running. Then it opens your default browser with
+a host tab that creates the game and one tab per character that joins its seat.
+`-Start` begins the campaign once everyone has joined. Each tab is its own seat,
+so switch tabs to play each turn. Frontend edits reload live; restart the API
+window after backend changes. If `play.ps1` is already serving port 8080, the
+tabs use that build's API. Add `-Url http://localhost:8080` to test the built app
+instead of Vite.
+
+Quick test links only work on localhost, reloading a tab reopens its seat, and
+test games are left off the home screen's saved-games list.
+
+## Map images
+
+`frontend/public/map-assets/middle-earth/map.png` (4096 × 2048) is the source
+art; the terrain generator reads it. The game shows `map.webp`, a 1.4 MB copy of
+it. When a player zooms in past what that image can show sharply on their
+screen, the map loads tiles from `hd/`: an AI upscale (Real-ESRGAN,
+`realesr-animevideov3`, 2×) cut into 8 × 4 WebP tiles, 2.7 MB in all. Only the
+tiles in view are loaded. After changing the map art, rebuild both:
+
+```sh
+realesrgan-ncnn-vulkan -i frontend/public/map-assets/middle-earth/map.png -o map-8k.png -n realesr-animevideov3 -s 2
+python scripts/make_map_tiles.py map-8k.png
+```
 
 ## Terrain strokes
 

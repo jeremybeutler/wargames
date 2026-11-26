@@ -1,0 +1,359 @@
+{
+ "_comment": "Campaign data for the Westeros map art (maps/westeros/source-art.webp, 1774 x 887). Coordinates are percentages of the map. Places sit on the castles and cities painted in the art; the Wall follows the painted Wall. scripts/build_westeros_map.py turns this into the game's map files.",
+ "size": {
+  "width": 1774,
+  "height": 887
+ },
+ "wall": [
+  [
+   12.8,
+   15.45
+  ],
+  [
+   19.17,
+   13.92
+  ],
+  [
+   25.54,
+   12.4
+  ]
+ ],
+ "places": [
+  {
+   "name": "The Lands of Always Winter",
+   "kind": "dead",
+   "x": 18.6,
+   "y": 5.07,
+   "region": "Beyond the Wall"
+  },
+  {
+   "name": "The Fist of the First Men",
+   "kind": "landmark",
+   "x": 14.37,
+   "y": 11.27,
+   "region": "Beyond the Wall"
+  },
+  {
+   "name": "Craster's Keep",
+   "kind": "landmark",
+   "x": 18.6,
+   "y": 11.95,
+   "region": "Beyond the Wall"
+  },
+  {
+   "name": "Hardhome",
+   "kind": "landmark",
+   "x": 24.8,
+   "y": 10.37,
+   "region": "Beyond the Wall",
+   "port": true
+  },
+  {
+   "name": "The Shadow Tower",
+   "kind": "castle",
+   "x": 13.81,
+   "y": 15.11,
+   "region": "The Wall"
+  },
+  {
+   "name": "Castle Black",
+   "kind": "castle",
+   "x": 19.17,
+   "y": 13.87,
+   "region": "The Wall"
+  },
+  {
+   "name": "Eastwatch-by-the-Sea",
+   "kind": "castle",
+   "x": 24.69,
+   "y": 12.74,
+   "region": "The Wall",
+   "port": true
+  },
+  {
+   "name": "Last Hearth",
+   "kind": "castle",
+   "x": 22.83,
+   "y": 19.17,
+   "region": "The North"
+  },
+  {
+   "name": "Deepwood Motte",
+   "kind": "castle",
+   "x": 12.01,
+   "y": 23.11,
+   "region": "The North"
+  },
+  {
+   "name": "Winterfell",
+   "kind": "seat",
+   "x": 19.17,
+   "y": 24.01,
+   "region": "The North"
+  },
+  {
+   "name": "The Dreadfort",
+   "kind": "castle",
+   "x": 26.1,
+   "y": 25.59,
+   "region": "The North"
+  },
+  {
+   "name": "Torrhen's Square",
+   "kind": "castle",
+   "x": 10.54,
+   "y": 30.1,
+   "region": "The North"
+  },
+  {
+   "name": "White Harbor",
+   "kind": "castle",
+   "x": 22.15,
+   "y": 30.1,
+   "region": "The North",
+   "port": true
+  },
+  {
+   "name": "Moat Cailin",
+   "kind": "castle",
+   "x": 16.91,
+   "y": 35.85,
+   "region": "The North"
+  },
+  {
+   "name": "The Twins",
+   "kind": "castle",
+   "x": 17.02,
+   "y": 40.92,
+   "region": "The Riverlands"
+  },
+  {
+   "name": "Riverrun",
+   "kind": "castle",
+   "x": 13.64,
+   "y": 45.89,
+   "region": "The Riverlands"
+  },
+  {
+   "name": "Harrenhal",
+   "kind": "castle",
+   "x": 20.29,
+   "y": 48.48,
+   "region": "The Riverlands"
+  },
+  {
+   "name": "Stoney Sept",
+   "kind": "town",
+   "x": 14.66,
+   "y": 54.45,
+   "region": "The Riverlands"
+  },
+  {
+   "name": "The Eyrie",
+   "kind": "castle",
+   "x": 27.79,
+   "y": 39.8,
+   "region": "The Vale"
+  },
+  {
+   "name": "Pyke",
+   "kind": "seat",
+   "x": 5.47,
+   "y": 41.38,
+   "region": "The Iron Islands",
+   "port": true
+  },
+  {
+   "name": "Casterly Rock",
+   "kind": "seat",
+   "x": 7.5,
+   "y": 55.58,
+   "region": "The Westerlands"
+  },
+  {
+   "name": "Lannisport",
+   "kind": "town",
+   "x": 6.37,
+   "y": 64.26,
+   "region": "The Westerlands",
+   "port": true
+  },
+  {
+   "name": "King's Landing",
+   "kind": "capital",
+   "x": 25.93,
+   "y": 58.62,
+   "region": "The Crownlands",
+   "port": true
+  },
+  {
+   "name": "Dragonstone",
+   "kind": "seat",
+   "x": 32.3,
+   "y": 52.65,
+   "region": "The Crownlands",
+   "port": true
+  },
+  {
+   "name": "Bitterbridge",
+   "kind": "town",
+   "x": 15.95,
+   "y": 66.85,
+   "region": "The Reach"
+  },
+  {
+   "name": "Highgarden",
+   "kind": "seat",
+   "x": 16.52,
+   "y": 74.07,
+   "region": "The Reach"
+  },
+  {
+   "name": "Oldtown",
+   "kind": "castle",
+   "x": 6.2,
+   "y": 77.79,
+   "region": "The Reach",
+   "port": true
+  },
+  {
+   "name": "Storm's End",
+   "kind": "castle",
+   "x": 26.1,
+   "y": 76.66,
+   "region": "The Stormlands",
+   "port": true
+  },
+  {
+   "name": "Yronwood",
+   "kind": "castle",
+   "x": 18.6,
+   "y": 89.06,
+   "region": "Dorne"
+  },
+  {
+   "name": "Starfall",
+   "kind": "castle",
+   "x": 10.71,
+   "y": 91.66,
+   "region": "Dorne",
+   "port": true
+  },
+  {
+   "name": "Sunspear",
+   "kind": "seat",
+   "x": 28.18,
+   "y": 87.6,
+   "region": "Dorne",
+   "port": true
+  },
+  {
+   "name": "Braavos",
+   "kind": "city",
+   "x": 40.87,
+   "y": 19.73,
+   "region": "Essos",
+   "port": true
+  },
+  {
+   "name": "Pentos",
+   "kind": "city",
+   "x": 39.74,
+   "y": 39.46,
+   "region": "Essos",
+   "port": true
+  },
+  {
+   "name": "Norvos",
+   "kind": "city",
+   "x": 58.06,
+   "y": 38.9,
+   "region": "Essos"
+  },
+  {
+   "name": "Qohor",
+   "kind": "city",
+   "x": 64.54,
+   "y": 35.17,
+   "region": "Essos"
+  },
+  {
+   "name": "Myr",
+   "kind": "city",
+   "x": 43.97,
+   "y": 58.06,
+   "region": "Essos",
+   "port": true
+  },
+  {
+   "name": "Tyrosh",
+   "kind": "city",
+   "x": 38.61,
+   "y": 62.8,
+   "region": "Essos",
+   "port": true
+  },
+  {
+   "name": "Lys",
+   "kind": "city",
+   "x": 40.3,
+   "y": 72.72,
+   "region": "Essos",
+   "port": true
+  },
+  {
+   "name": "Volantis",
+   "kind": "city",
+   "x": 54.11,
+   "y": 73.28,
+   "region": "Essos",
+   "port": true
+  },
+  {
+   "name": "Valyria",
+   "kind": "landmark",
+   "x": 62.01,
+   "y": 78.58,
+   "region": "Essos"
+  },
+  {
+   "name": "Astapor",
+   "kind": "city",
+   "x": 67.64,
+   "y": 62.8,
+   "region": "Slaver's Bay",
+   "port": true
+  },
+  {
+   "name": "Yunkai",
+   "kind": "city",
+   "x": 74.41,
+   "y": 57.72,
+   "region": "Slaver's Bay",
+   "port": true
+  },
+  {
+   "name": "Meereen",
+   "kind": "city",
+   "x": 83.15,
+   "y": 53.55,
+   "region": "Slaver's Bay",
+   "port": true
+  },
+  {
+   "name": "Vaes Dothrak",
+   "kind": "city",
+   "x": 85.68,
+   "y": 23.34,
+   "region": "Essos"
+  },
+  {
+   "name": "Qarth",
+   "kind": "city",
+   "x": 94.7,
+   "y": 71.82,
+   "region": "Essos",
+   "port": true
+  }
+ ]
+}

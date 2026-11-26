@@ -74,21 +74,33 @@ final class SeatSessions {
 
     static void issue(HttpServletRequest request, HttpServletResponse response, String gameCode,
                       String seat, String secret) {
-        response.addHeader("Set-Cookie", cookie(request, gameCode, seat, secret, COOKIE_LIFETIME).toString());
+        issue(request, response, "/api/games/", gameCode, seat, secret);
+    }
+
+    /** As above, for a game whose API lives under another path (e.g. "/api/thrones/"). */
+    static void issue(HttpServletRequest request, HttpServletResponse response, String apiPath,
+                      String gameCode, String seat, String secret) {
+        response.addHeader("Set-Cookie",
+            cookie(request, apiPath + gameCode, seat, secret, COOKIE_LIFETIME).toString());
     }
 
     static void clear(HttpServletRequest request, HttpServletResponse response, String gameCode, String seat) {
-        response.addHeader("Set-Cookie", cookie(request, gameCode, seat, "", Duration.ZERO).toString());
+        clear(request, response, "/api/games/", gameCode, seat);
     }
 
-    private static ResponseCookie cookie(HttpServletRequest request, String gameCode, String seat,
+    static void clear(HttpServletRequest request, HttpServletResponse response, String apiPath,
+                      String gameCode, String seat) {
+        response.addHeader("Set-Cookie", cookie(request, apiPath + gameCode, seat, "", Duration.ZERO).toString());
+    }
+
+    private static ResponseCookie cookie(HttpServletRequest request, String path, String seat,
                                          String value, Duration maxAge) {
         return ResponseCookie.from(COOKIE_PREFIX + seat, value)
             .httpOnly(true)
             // Secure only over HTTPS, so phones on the local network over plain HTTP still work.
             .secure(isHttps(request))
             .sameSite("Strict")
-            .path("/api/games/" + gameCode)
+            .path(path)
             .maxAge(maxAge)
             .build();
     }
