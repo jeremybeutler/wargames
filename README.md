@@ -177,6 +177,11 @@ administrators. The token is retained in the current browser tab's session
 storage and is required on every map-data write; leaving the editor does not
 revoke it, while **Lock editor** clears it.
 
+Locally, `mvn spring-boot:run` and `scripts/play.ps1` use the `local` profile,
+whose default token is `admin` (set `MAP_EDITOR_TOKEN` to override it). The
+deployed app never uses that profile; on Render the token is the generated
+`MAP_EDITOR_TOKEN` on the service's Environment page.
+
 ## Campaign API
 
 All resources are JSON under `/api`. Campaigns have a `slug`, `name`, `setting`,

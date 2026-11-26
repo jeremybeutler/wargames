@@ -140,7 +140,8 @@ Write-Host "==> Starting the game server on port $Port" -ForegroundColor Cyan
 $logFile = Join-Path $backend 'data\server.log'
 New-Item -ItemType Directory -Force (Split-Path $logFile) | Out-Null
 # Run from backend/ so the database stays at backend/data/wargames.mv.db.
-$server = Start-Process java -ArgumentList '-jar', "`"$jar`"", "--server.port=$Port" `
+# The "local" profile gives the map editor an easy default token (application-local.properties).
+$server = Start-Process java -ArgumentList '-jar', "`"$jar`"", "--server.port=$Port", '--spring.profiles.active=local' `
     -WorkingDirectory $backend -NoNewWindow -PassThru `
     -RedirectStandardOutput $logFile -RedirectStandardError "$logFile.err"
 
@@ -168,6 +169,8 @@ try {
         Where-Object { $_.PrefixOrigin -in 'Dhcp', 'Manual' -and $_.IPAddress -notlike '169.254*' } |
         Select-Object -ExpandProperty IPAddress
     foreach ($ip in $lanIps) { Write-Host "Same Wi-Fi:      http://${ip}:$Port" }
+    $editorToken = if ($env:MAP_EDITOR_TOKEN) { '(your MAP_EDITOR_TOKEN)' } else { 'admin' }
+    Write-Host "Map editor:      http://localhost:$Port/?view=map  token: $editorToken"
 
     if ($LocalOnly) {
         Write-Host ''
