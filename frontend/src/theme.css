@@ -1,0 +1,72 @@
+/*
+ * Shared "cinematic dark fantasy" design tokens for both campaigns and the home screen.
+ * Each game's own stylesheet (Gameplay.vue, thrones/ThronesGameplay.vue) builds on these;
+ * the games differ only in their accent colors.
+ */
+
+:root {
+  /* Surfaces: near-black with a warm undertone, lifting toward smoke. */
+  --cine-void: #060508;
+  --cine-bg: #0b0a0d;
+  --cine-panel: #121015;
+  --cine-panel-2: #18151b;
+  --cine-raise: #201c22;
+  --cine-glass: rgba(16, 14, 19, .86);
+
+  /* Gold leaf and its hairlines. */
+  --cine-gold: #d9b26a;
+  --cine-gold-hi: #f4dc9c;
+  --cine-gold-lo: #8a6833;
+  --cine-line: rgba(217, 178, 106, .16);
+  --cine-line-strong: rgba(217, 178, 106, .42);
+  --cine-glow: rgba(217, 178, 106, .30);
+
+  /* Ember: danger, battle, the Eye. */
+  --cine-ember: #e0703c;
+  --cine-ember-deep: #7a2a17;
+  --cine-ember-glow: rgba(224, 112, 60, .38);
+
+  /* Text. */
+  --cine-ink: #efe6d2;
+  --cine-muted: #a79e8c;
+  --cine-dim: #6d6557;
+
+  /* Type. */
+  --cine-title: 'Cinzel', 'Barlow Condensed', serif;
+  --cine-serif: 'Cormorant Garamond', Georgia, serif;
+  --cine-body: 'DM Sans', sans-serif;
+
+  /* Depth. */
+  --cine-shadow: 0 18px 50px rgba(0, 0, 0, .62);
+  --cine-inset: inset 0 1px 0 rgba(255, 236, 190, .06);
+  --cine-radius: 10px;
+
+  color-scheme: dark;
+}
+
+html, body { background: var(--cine-void); }
+
+::selection { background: rgba(217, 178, 106, .35); color: #fff6dc; }
+
+/* Thin gold scrollbars on dark panels. */
+* { scrollbar-width: thin; scrollbar-color: rgba(217, 178, 106, .35) transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { border-radius: 8px; background: rgba(217, 178, 106, .28); }
+*::-webkit-scrollbar-track { background: transparent; }
+
+@keyframes cine-rise {
+  from { opacity: 0; transform: translateY(14px) scale(.98); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes cine-glow-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--cine-ember-glow), 0 0 14px 2px var(--cine-ember-glow); }
+  50% { box-shadow: 0 0 0 4px rgba(224, 112, 60, .12), 0 0 26px 6px var(--cine-ember-glow); }
+}
+@keyframes cine-flicker {
+  0%, 100% { opacity: 1; }
+  45% { opacity: .82; }
+  55% { opacity: .95; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+}

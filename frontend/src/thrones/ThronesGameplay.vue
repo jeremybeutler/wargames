@@ -1256,6 +1256,192 @@ h1, h2 { font-family: 'Cinzel', 'Barlow Condensed', serif; font-weight: 600; col
 .ping { display: inline-block; width: 7px; height: 7px; margin-left: 6px; border-radius: 50%; background: #f2cd6c; vertical-align: middle; }
 
 .realm-toggle { display: none; }
+/* ===================================================================================
+ * Cinematic theme (shared tokens in src/theme.css), in crimson and steel. Layout lives
+ * above; this layer sets surfaces, type, color and light. Phone layout still wins.
+ * =================================================================================== */
+.thrones-app {
+  --ink: var(--cine-ink);
+  --muted: var(--cine-muted);
+  --panel: var(--cine-panel);
+  --panel-2: var(--cine-panel-2);
+  --line: var(--cine-line);
+  --gold: var(--cine-gold);
+  --crimson: #b3342b;
+  --crimson-deep: #3a0d0c;
+  --steel: #a9b8c4;
+  background: radial-gradient(120% 80% at 50% 0%, #160d0e 0%, var(--cine-bg) 45%, var(--cine-void) 100%);
+  font-family: var(--cine-body);
+}
+
+/* ---------- Header ---------- */
+.topbar { border-bottom: 1px solid rgba(179,52,43,.35); background: linear-gradient(180deg, #120c0e, #09080b); box-shadow: 0 1px 0 rgba(0,0,0,.6), 0 10px 30px rgba(0,0,0,.45); }
+.brand-mark { border: 1px solid var(--cine-line-strong); border-radius: 50%; background: radial-gradient(circle, #2b1512, #0c0a0d 70%); box-shadow: 0 0 18px rgba(179,52,43,.35), inset 0 0 10px rgba(217,178,106,.15); }
+.brand-mark svg { fill: var(--cine-gold-hi); }
+.brand strong { font: 700 15px var(--cine-title); letter-spacing: 3px; color: #f3e1b6; }
+.brand small { color: var(--cine-dim); letter-spacing: 2.6px; }
+.topbar-title { border-left-color: var(--cine-line); color: var(--cine-gold); font: 600 11px var(--cine-title); letter-spacing: 2.6px; }
+.status-pill { color: var(--cine-muted); }
+.status-pill i { background: var(--crimson); box-shadow: 0 0 10px rgba(179,52,43,.7); }
+.ghost-button { border-color: var(--cine-line-strong); background: rgba(217,178,106,.04); color: #e1d3b0; }
+.ghost-button:hover { border-color: var(--cine-gold); color: var(--cine-gold-hi); box-shadow: 0 0 12px var(--cine-glow); }
+
+/* ---------- Messages and type ---------- */
+.message.error { border-bottom-color: #7a2f22; background: linear-gradient(90deg, #2a0f0b, #1a0b09); }
+.message.notice { border-bottom-color: var(--cine-line-strong); background: linear-gradient(90deg, #1d180f, #120f0b); color: #eadcb2; }
+.victory { background: linear-gradient(90deg, #120607, #4a1a14 50%, #120607); color: var(--cine-gold-hi); font: 700 18px var(--cine-title); letter-spacing: 3px; text-shadow: 0 0 18px var(--cine-glow); border-bottom-color: var(--cine-gold-lo); }
+.eyebrow { color: #b39a6a; letter-spacing: 2.4px; }
+h1, h2 { font-family: var(--cine-title); font-weight: 700; letter-spacing: 1.2px; color: #f4e6c4; }
+.hint { color: var(--cine-muted); }
+.subtitle { color: #cbbd9c; font: italic 500 19px var(--cine-serif); }
+
+/* ---------- Buttons and inputs ---------- */
+.gold-button {
+  border: 1px solid #f0d390;
+  background: linear-gradient(180deg, #f3d792 0%, #d3a75a 48%, #a7772f 100%);
+  color: #1c1307;
+  font: 700 12px var(--cine-title);
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+  box-shadow: inset 0 1px 0 rgba(255,250,225,.65), 0 6px 18px rgba(0,0,0,.45);
+  transition: box-shadow .2s, filter .2s;
+}
+.gold-button:hover:not(:disabled) { filter: brightness(1.06); box-shadow: inset 0 1px 0 rgba(255,250,225,.7), 0 0 22px var(--cine-glow); }
+.action-button { border: 1px solid var(--cine-line-strong); background: linear-gradient(180deg, #1d191f, #141117); color: #eadfc6; box-shadow: var(--cine-inset); }
+.action-button:hover:not(:disabled) { border-color: var(--cine-gold); box-shadow: var(--cine-inset), 0 0 14px rgba(217,178,106,.18); }
+.danger { border-color: #c0443a; background: linear-gradient(180deg, #4e1512, #2a0a09); color: #ffd2c6; }
+.danger:hover:not(:disabled) { box-shadow: 0 0 16px rgba(179,52,43,.45); }
+.link-button { color: var(--cine-gold); }
+.link-button:hover { color: var(--cine-gold-hi); text-shadow: 0 0 10px var(--cine-glow); }
+.join-form input, .host-card input:not([type='range']):not([type='checkbox']), .claim-fields input, .claim-fields select, .power-box select {
+  border: 1px solid var(--cine-line-strong);
+  background: rgba(6,5,8,.75);
+}
+.join-form input:focus, .host-card input:focus, .claim-fields input:focus, .claim-fields select:focus { outline: none; border-color: var(--cine-gold); box-shadow: 0 0 0 3px rgba(217,178,106,.14); }
+.join-form input { font-family: var(--cine-title); }
+
+/* ---------- Welcome and lobby ---------- */
+.welcome {
+  background:
+    radial-gradient(60% 55% at 50% 45%, rgba(11,10,13,.3), rgba(6,5,8,.93) 75%),
+    linear-gradient(180deg, rgba(6,5,8,.5), rgba(6,5,8,.2) 40%, rgba(40,6,6,.55) 100%),
+    url('/map-assets/westeros/map.webp') center / cover;
+}
+.welcome-card, .claim-card {
+  position: relative;
+  border: 1px solid var(--cine-line-strong);
+  border-radius: 4px;
+  background: linear-gradient(180deg, rgba(22,15,17,.93), rgba(10,9,12,.96));
+  box-shadow: 0 30px 90px rgba(0,0,0,.75), inset 0 0 60px rgba(179,52,43,.06);
+  animation: cine-rise .6s ease-out both;
+}
+.welcome-card::before { content: ''; position: absolute; inset: 7px; border: 1px solid var(--cine-line); pointer-events: none; }
+.welcome-card h1 {
+  font: 800 clamp(30px, 6vw, 42px)/1.05 var(--cine-title);
+  letter-spacing: 3px;
+  background: linear-gradient(180deg, #fff1c4 0%, #e3bd70 55%, #9c7230 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 2px 14px rgba(217,178,106,.25));
+}
+.crown { fill: var(--cine-gold-hi); filter: drop-shadow(0 0 14px rgba(244,220,156,.45)); }
+.saved-button, .forget { border-color: var(--cine-line); background: rgba(20,17,22,.85); }
+.saved-button:hover, .forget:hover { border-color: var(--cine-line-strong); }
+.lobby {
+  background:
+    radial-gradient(70% 60% at 50% 30%, rgba(11,10,13,.55), rgba(6,5,8,.95) 80%),
+    url('/map-assets/westeros/map.webp') center / cover;
+}
+.lobby-head h1.code { font: 700 50px var(--cine-title); letter-spacing: 12px; color: var(--cine-gold-hi); text-shadow: 0 0 26px var(--cine-glow); }
+.house-tile {
+  border: 1px solid var(--cine-line);
+  border-top: 3px solid var(--house);
+  border-radius: 4px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--house) 14%, #121015), #0c0b0e);
+  box-shadow: var(--cine-inset), 0 10px 24px rgba(0,0,0,.4);
+  transition: transform .15s, box-shadow .2s, border-color .2s;
+}
+.house-tile:hover:not(.taken):not(.static) { transform: translateY(-2px); box-shadow: var(--cine-inset), 0 14px 30px rgba(0,0,0,.5), 0 0 18px color-mix(in srgb, var(--house) 35%, transparent); }
+.house-tile .sigil { box-shadow: 0 0 0 2px rgba(0,0,0,.6), 0 0 16px color-mix(in srgb, var(--house) 45%, transparent); }
+.house-tile strong { font: 700 15px var(--cine-title); letter-spacing: 1.4px; color: #f3e4be; }
+.house-tile.chosen, .house-tile.mine { border-color: var(--cine-gold); box-shadow: 0 0 0 1px var(--cine-gold), 0 0 22px var(--cine-glow); }
+.house-rule { color: #ddd0b4; font-family: var(--cine-serif); font-size: 15px; line-height: 1.35; }
+
+/* ---------- Game panels ---------- */
+.realm-panel, .house-panel { border-color: var(--cine-line); background: linear-gradient(180deg, #121015, #0b0a0d); }
+.season-card, .crown-card, .fate-mini, .houses-card, .events-card, .pacts, .stats div, .waiting {
+  border: 1px solid var(--cine-line);
+  border-radius: 6px;
+  background: linear-gradient(180deg, rgba(30,24,28,.7), rgba(12,11,14,.9));
+  box-shadow: var(--cine-inset);
+}
+.season-card h2 { letter-spacing: 3px; }
+.season-card p, .events-card p:not(.eyebrow) { font-family: var(--cine-serif); font-size: 14px; line-height: 1.3; color: #ddd0b4; }
+.season-card.winter { border-color: rgba(159,214,234,.45); background: linear-gradient(180deg, rgba(30,50,62,.75), rgba(12,14,18,.95)); box-shadow: inset 0 0 40px rgba(159,214,234,.08); }
+.season-card.winter h2 { text-shadow: 0 0 16px rgba(159,214,234,.55); }
+.crown-card { border-color: var(--cine-line-strong); }
+.crown-card strong { color: var(--cine-gold-hi); text-shadow: 0 0 12px var(--cine-glow); }
+.fate-mini { border-color: rgba(224,112,60,.35); }
+.fate-mini:hover { box-shadow: 0 0 18px var(--cine-ember-glow); }
+.house-row.active { background: linear-gradient(90deg, rgba(217,178,106,.18), transparent); box-shadow: inset 2px 0 0 var(--cine-gold); }
+.house-row strong { font-family: var(--cine-title); letter-spacing: .6px; }
+.events-card p:not(.eyebrow) { border-bottom-color: rgba(217,178,106,.07); }
+.house-head { border-bottom-color: var(--house); }
+.house-head h1 { color: var(--cine-gold-hi); letter-spacing: 1.6px; }
+.portrait { box-shadow: 0 0 0 3px rgba(0,0,0,.6), 0 0 22px color-mix(in srgb, var(--house) 45%, transparent); }
+.stats dt { color: #a8916a; letter-spacing: 1.8px; }
+.actions { border: 1px solid var(--cine-line-strong); border-radius: 6px; background: linear-gradient(180deg, rgba(42,34,22,.45), rgba(12,11,14,.92)); }
+.battle-button { border-color: #c0443a; border-radius: 6px; background: linear-gradient(180deg, #4e1512, #2a0a09); }
+.battle-button:hover { box-shadow: 0 0 18px rgba(179,52,43,.45); }
+.power-box { border-color: var(--cine-line-strong); }
+.offer { background: linear-gradient(90deg, rgba(217,178,106,.14), transparent); }
+
+/* ---------- Map ---------- */
+.map-panel { background: var(--cine-void); }
+.map-stage { background: #071a24; }
+.map-stage::after { content: ''; position: absolute; inset: 0; z-index: 7; pointer-events: none; box-shadow: inset 0 0 140px 40px rgba(4,3,5,.78), inset 0 0 0 1px rgba(217,178,106,.08); }
+.place-label { background: rgba(8,7,10,.72); box-shadow: 0 0 0 1px rgba(217,178,106,.1); }
+.place-label.capital { font-family: var(--cine-title); letter-spacing: 1.4px; color: var(--cine-gold-hi); text-shadow: 0 0 10px rgba(0,0,0,.9); }
+.marker-info { border: 1px solid var(--cine-line-strong); border-radius: 4px; background: var(--cine-glass); box-shadow: var(--cine-shadow); backdrop-filter: blur(6px); }
+.marker-info strong { color: var(--cine-gold-hi); letter-spacing: 1px; }
+.army-token { box-shadow: 0 0 0 2px var(--cine-gold), 0 0 0 3px rgba(0,0,0,.7), 0 4px 12px rgba(0,0,0,.8), 0 0 16px color-mix(in srgb, var(--house) 50%, transparent); }
+.marker.active .army-token { box-shadow: 0 0 0 2px var(--cine-gold-hi), 0 0 0 5px rgba(244,220,156,.35), 0 0 26px rgba(244,220,156,.55); }
+.marker.mine .army-token { box-shadow: 0 0 0 3px var(--cine-gold-hi), 0 0 20px rgba(244,220,156,.45), 0 4px 12px rgba(0,0,0,.8); }
+.castle-token { background: rgba(10,9,12,.9); }
+.castle-token.great { box-shadow: 0 0 0 2px var(--house), 0 0 0 3px var(--cine-gold), 0 0 14px rgba(217,178,106,.35), 0 2px 6px #000a; }
+.destination { border-color: var(--cine-gold-hi); box-shadow: 0 0 0 4px rgba(244,220,156,.25), 0 0 18px rgba(244,220,156,.6); }
+.zoom-controls { z-index: 9; border: 1px solid var(--cine-line-strong); border-radius: 6px; background: var(--cine-glass); box-shadow: var(--cine-shadow); backdrop-filter: blur(6px); }
+.zoom-controls button { border: 1px solid var(--cine-line); background: linear-gradient(#1d191f, #131016); color: #eadfc6; }
+.zoom-controls span { color: var(--cine-gold); font-family: var(--cine-title); }
+.map-hint { z-index: 9; border-color: var(--cine-line-strong); background: var(--cine-glass); color: var(--cine-gold-hi); font-family: var(--cine-title); letter-spacing: 1px; }
+.move-bar { border-top-color: var(--cine-line-strong); background: linear-gradient(90deg, #1b150c, #0e0c0f); }
+.map-foot { border-top-color: var(--cine-line); background: #08070a; color: var(--cine-dim); }
+.map-foot b { color: var(--cine-gold); }
+
+/* ---------- Dialogs ---------- */
+.backdrop { background: radial-gradient(circle at 50% 45%, rgba(30,6,6,.5), rgba(3,2,4,.88)); backdrop-filter: blur(3px); }
+.backdrop.light { background: radial-gradient(circle at 50% 45%, rgba(30,6,6,.35), rgba(3,2,4,.7)); }
+.sheet, .battle-card {
+  border: 1px solid var(--cine-line-strong);
+  border-radius: 6px;
+  background: linear-gradient(180deg, #17121a, #0c0a0e);
+  box-shadow: 0 40px 120px rgba(0,0,0,.85), inset 0 0 80px rgba(179,52,43,.05);
+  animation: cine-rise .35s ease-out both;
+}
+.sheet header h2 { color: var(--cine-gold-hi); letter-spacing: 3px; }
+.sheet h3 { color: var(--cine-gold); font-family: var(--cine-title); letter-spacing: 3px; border-bottom: 1px solid var(--cine-line); padding-bottom: 4px; }
+.sheet ul { color: #dcd1b9; }
+.fate-card { border: 1px solid var(--cine-gold); border-radius: 6px; background: radial-gradient(circle at 50% 0, #4a2a12, #120d10 72%); box-shadow: 0 40px 120px #000, 0 0 60px rgba(224,112,60,.2), inset 0 0 0 6px rgba(0,0,0,.35), inset 0 0 0 7px var(--cine-line-strong); }
+.fate-card h2 { color: var(--cine-gold-hi); letter-spacing: 2px; text-shadow: 0 0 20px var(--cine-glow); }
+.fate-card p:not(.eyebrow) { font-family: var(--cine-serif); font-size: 17px; line-height: 1.35; }
+.battle-card { box-shadow: 0 40px 120px rgba(0,0,0,.85), 0 0 60px rgba(179,52,43,.18); }
+.vs { color: var(--crimson); text-shadow: 0 0 14px rgba(179,52,43,.6); }
+.dice i { background: linear-gradient(#fdf4dc, #d8c497); box-shadow: inset 0 -3px 0 rgba(0,0,0,.2), 0 2px 6px rgba(0,0,0,.7); }
+.dice i.defender { background: linear-gradient(#dfe7ec, #93a6b2); }
+.dice i.win { outline: 2px solid var(--cine-gold-hi); box-shadow: 0 0 18px rgba(244,220,156,.55); }
+.total { color: var(--cine-gold-hi); font-family: var(--cine-title); }
+.battle-result { color: #f0e2c0; font: italic 500 18px var(--cine-serif); }
 @media (max-width: 1280px) and (min-width: 861px) {
   .game-layout { position: relative; grid-template-columns: minmax(0, 1fr) 300px; }
   .realm-panel { position: absolute; z-index: 20; top: 0; bottom: 0; left: 0; width: 290px; transform: translateX(-100%);
@@ -1280,5 +1466,12 @@ h1, h2 { font-family: 'Cinzel', 'Barlow Condensed', serif; font-weight: 600; col
   .tabs button.selected { color: #f2d58b; box-shadow: inset 0 3px 0 var(--gold); }
   .claim-fields { grid-template-columns: 1fr; }
   .move-bar { flex-wrap: wrap; }
+}
+/* Cinematic theme on phones. */
+@media (max-width: 860px) {
+  .tabs { border-top: 1px solid var(--cine-line-strong); background: #0a090c; box-shadow: 0 -10px 30px rgba(0,0,0,.6); }
+  .tabs button { color: var(--cine-muted); font-family: var(--cine-title); letter-spacing: 1px; }
+  .tabs button.selected { color: var(--cine-gold-hi); box-shadow: inset 0 2px 0 var(--cine-gold); }
+  .map-stage::after { box-shadow: inset 0 0 60px 14px rgba(4,3,5,.7); }
 }
 </style>
