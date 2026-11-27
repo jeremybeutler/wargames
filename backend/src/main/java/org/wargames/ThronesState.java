@@ -20,6 +20,8 @@ final class ThronesState {
         public int roundLimit;
         /** When nobody claims the Dead, the server plays them. */
         public boolean computerDead;
+        /** Table talk the host chose: off, text, voice or both (null on older saves: text). */
+        public String chatMode;
         public int round;
         public int turnIndex;
         public List<String> turnOrderIds = new ArrayList<>();

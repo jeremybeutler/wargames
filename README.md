@@ -268,6 +268,31 @@ terrain/westeros-preview.png` to see what was detected. The source art is
 zooms look soft. Replace `source-art.webp` with a larger 2:1 version (an AI
 upscale, say) to sharpen it. The Iron Throne screen does not load HD tiles yet.
 
+## Table talk (live chat)
+
+When creating a game, the host chooses its **table talk**: Off, Text, Voice, or
+Text + voice (text by default; games saved before this have text). Everyone who
+holds a seat, the host included, opens it from the round button in the corner of
+the lobby and game screens (top-left on phones).
+
+- **Text** messages show each sender's player name, character and side color,
+  with an unread badge while the panel is closed. They are stored in their own
+  `chat_messages` table (the newest 200 per game), not in the game state, so a
+  message can never collide with a move being saved. One message per person
+  every 0.6 seconds at most, up to 300 characters.
+- **Voice** is browser to browser (WebRTC): **Join voice**, then mute or leave
+  at any time. The server only relays each pair's connection setup and tracks
+  who is in the channel (in memory; up to 9 people). Audio connects through the
+  free public STUN servers, which works on most home networks; some mobile
+  carriers' networks need a paid relay (TURN) server and may not connect.
+  Browsers only allow the microphone on secure pages: the live site, `localhost`,
+  and the Cloudflare or Tailscale links from `play.ps1` work, but a plain
+  `http://` local network address does not.
+
+The API lives under each game's own path (seat cookies are scoped to it):
+`/api/games/{code}/chat` and `/voice` for War of the Ring, and the same under
+`/api/thrones/{code}` for the Iron Throne, all served by `ChatService`.
+
 ## Quick test games
 
 To try a change with every seat filled, run:

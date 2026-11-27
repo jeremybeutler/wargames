@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { HOUSES, SIGILS, houseColor, PLACE_KINDS_WITH_LABELS } from './houses.js'
+import TableTalk from '../TableTalk.vue'
 
 const props = defineProps({ initialCode: { type: String, default: '' } })
 const emit = defineEmits(['exit'])
@@ -25,6 +26,18 @@ const hostName = ref('')
 const mapWidthMiles = ref(2500)
 const roundLimit = ref(20)
 const computerDead = ref(true)
+// Table talk for the game, chosen by the host: off, text, voice or both.
+const chatMode = ref('text')
+const CHAT_MODES = [
+  { id: 'off', label: 'Off', hint: 'No table talk' },
+  { id: 'text', label: 'Text', hint: 'Live messages' },
+  { id: 'voice', label: 'Voice', hint: 'Talk out loud' },
+  { id: 'both', label: 'Text + voice', hint: 'Both' },
+]
+// The realm panel sits on the left only on wide screens; the chat button clears it.
+const wideQuery = typeof window !== 'undefined' && window.matchMedia ? window.matchMedia('(min-width: 1281px)') : null
+const wide = ref(Boolean(wideQuery?.matches))
+wideQuery?.addEventListener?.('change', event => { wide.value = event.matches })
 const chosenHouse = ref('')
 const chosenHeir = ref('')
 const savedSeats = ref([])
@@ -447,7 +460,7 @@ function hostGame() {
     seat.value = ''
     const created = await api(API, {
       method: 'POST',
-      body: JSON.stringify({ playerName: hostName.value, mapWidthMiles: mapWidthMiles.value, roundLimit: roundLimit.value, computerDead: computerDead.value }),
+      body: JSON.stringify({ playerName: hostName.value, mapWidthMiles: mapWidthMiles.value, roundLimit: roundLimit.value, computerDead: computerDead.value, chatMode: chatMode.value }),
     })
     remember(created)
     show(created)
@@ -627,6 +640,9 @@ onBeforeUnmount(() => {
 
 <template>
   <main class="thrones-app">
+    <TableTalk v-if="game && seat && game.chatMode && game.chatMode !== 'off' && ['lobby', 'game'].includes(view)"
+      :key="`${game.code}:${seat}`" :api-base="`/api/thrones/${game.code}`" :seat="seat" :mode="game.chatMode"
+      :side-color="side => side ? houseColor(side) : ''" :left="view === 'game' && wide ? '284px' : '14px'" />
     <header class="topbar">
       <a class="brand" href="#" @click.prevent="view === 'home' || view === 'host' ? emit('exit') : backToMenu()">
         <span class="brand-mark">
@@ -771,6 +787,13 @@ onBeforeUnmount(() => {
         <label for="round-limit">LAST ROUND · {{ roundLimit }}</label>
         <input id="round-limit" v-model.number="roundLimit" type="range" min="8" max="40" step="1" />
         <label class="check"><input v-model="computerDead" type="checkbox" /> If no one plays the Dead, the server commands them</label>
+        <label>TABLE TALK</label>
+        <div class="chat-mode" role="radiogroup" aria-label="Table talk">
+          <button v-for="option in CHAT_MODES" :key="option.id" type="button" role="radio" :aria-checked="chatMode === option.id"
+            :class="{ selected: chatMode === option.id }" @click="chatMode = option.id">
+            {{ option.label }}<small>{{ option.hint }}</small>
+          </button>
+        </div>
         <p class="hint">3 to 8 players. Each player claims a house on their own phone; houses nobody claims become neutral castles.</p>
         <button class="gold-button" type="submit" :disabled="busy || !hostName.trim()">Create game</button>
         <button class="link-button" type="button" @click="view = 'home'">← Back</button>
@@ -1467,6 +1490,11 @@ h1, h2 { font-family: var(--cine-title); font-weight: 700; letter-spacing: 1.2px
   .claim-fields { grid-template-columns: 1fr; }
   .move-bar { flex-wrap: wrap; }
 }
+/* Table talk choice on the host's setup screen */
+.chat-mode { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; margin-bottom: 12px; }
+.chat-mode button { padding: 7px 4px; border: 1px solid var(--cine-line, rgba(217,178,106,.16)); border-radius: 6px; background: rgba(6,5,8,.7); color: #ddd1b6; font: 600 11px var(--cine-title, serif); letter-spacing: .4px; cursor: pointer; text-align: center; }
+.chat-mode button small { display: block; margin-top: 2px; color: var(--cine-dim, #6d6557); font: 500 9px var(--cine-body, sans-serif); letter-spacing: 0; }
+.chat-mode button.selected { border-color: var(--cine-gold, #d9b26a); background: linear-gradient(#2a2216, #17120c); color: var(--cine-gold-hi, #f4dc9c); box-shadow: 0 0 16px rgba(217,178,106,.16); }
 /* Cinematic theme on phones. */
 @media (max-width: 860px) {
   .tabs { border-top: 1px solid var(--cine-line-strong); background: #0a090c; box-shadow: 0 -10px 30px rgba(0,0,0,.6); }

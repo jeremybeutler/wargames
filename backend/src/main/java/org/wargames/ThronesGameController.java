@@ -17,6 +17,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 import org.wargames.ThronesGame.RuleException;
@@ -40,7 +41,11 @@ public class ThronesGameController {
     private final ThronesMap map;
     private final ThronesGame game;
 
-    public ThronesGameController(GameSessionRepository games, ObjectMapper objectMapper, ThronesMap map) {
+    private final ChatService chat;
+
+    public ThronesGameController(GameSessionRepository games, ObjectMapper objectMapper, ThronesMap map,
+                                 ChatService chat) {
+        this.chat = chat;
         this.games = games;
         this.objectMapper = objectMapper;
         this.map = map;
@@ -58,6 +63,7 @@ public class ThronesGameController {
         String secret = SeatSessions.newSecret();
         Room room = game.create(generateCode(), name, SeatSessions.hash(secret), miles, rounds,
             request.computerDead() == null || request.computerDead(), Instant.now().toString());
+        room.chatMode = ChatService.mode(request.chatMode());
         save(room);
         SeatSessions.issue(http, response, API_PATH, room.code, SeatSessions.HOST_SEAT, secret);
         return view(room, SeatSessions.HOST_SEAT);
@@ -315,8 +321,66 @@ public class ThronesGameController {
             List.copyOf(events), room.lastBattle, map.wall(), started ? List.copyOf(room.turnOrderIds) : List.of(),
             own == null || !started ? 0 : game.recruitCost(room, own),
             map.places().stream().map(place -> new PlaceView(place.name(), place.kind(), place.x(), place.y(),
-                place.region())).toList());
+                place.region())).toList(), room.chatMode == null ? ChatService.TEXT : room.chatMode);
     }
+
+    // ------------------------------------------------------------------ table talk (ChatService)
+
+    @GetMapping("/{code}/chat")
+    public List<ChatService.MessageView> chatMessages(@PathVariable String code, HttpServletRequest http,
+                                                      @RequestParam(required = false) Long since) {
+        Room room = load(code);
+        chatSpeaker(room, http);
+        return chat.messages(room.code, room.chatMode, since);
+    }
+
+    @PostMapping("/{code}/chat")
+    public ChatService.MessageView sendChat(@PathVariable String code, HttpServletRequest http,
+                                            @RequestBody ChatRequest request) {
+        Room room = load(code);
+        return chat.send(room.code, room.chatMode, chatSpeaker(room, http), request.text());
+    }
+
+    @PostMapping("/{code}/voice/join")
+    public ChatService.VoiceView joinVoice(@PathVariable String code, HttpServletRequest http,
+                                           @RequestBody VoiceJoinRequest request) {
+        Room room = load(code);
+        return chat.joinVoice(room.code, room.chatMode, chatSpeaker(room, http), Boolean.TRUE.equals(request.muted()));
+    }
+
+    @PostMapping("/{code}/voice/leave")
+    public void leaveVoice(@PathVariable String code, HttpServletRequest http) {
+        Room room = load(code);
+        chat.leaveVoice(room.code, chatSpeaker(room, http).seat());
+    }
+
+    @PostMapping("/{code}/voice/signal")
+    public void voiceSignal(@PathVariable String code, HttpServletRequest http, @RequestBody VoiceSignalRequest request) {
+        Room room = load(code);
+        chat.signal(room.code, room.chatMode, chatSpeaker(room, http).seat(), request.to(), request.kind(), request.data());
+    }
+
+    @GetMapping("/{code}/voice")
+    public ChatService.VoiceView pollVoice(@PathVariable String code, HttpServletRequest http,
+                                           @RequestParam(defaultValue = "0") long since) {
+        Room room = load(code);
+        return chat.pollVoice(room.code, room.chatMode, chatSpeaker(room, http).seat(), since);
+    }
+
+    /** Only seat holders (the host and players) may chat. */
+    private ChatService.Speaker chatSpeaker(Room room, HttpServletRequest http) {
+        String seat = authenticate(room, http);
+        if (seat == null) throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Take a seat to join the conversation.");
+        if (SeatSessions.HOST_SEAT.equals(seat)) return new ChatService.Speaker(seat, room.hostName + " (host)", null);
+        House house = room.houses.stream().filter(item -> item.id.equals(seat)).findFirst()
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.FORBIDDEN, "Take a seat to join the conversation."));
+        String player = house.playerName == null ? house.name : house.playerName;
+        return new ChatService.Speaker(seat, player + " · " + house.leader, house.id);
+    }
+
+    record ChatRequest(String text) {}
+    record VoiceJoinRequest(Boolean muted) {}
+    record VoiceSignalRequest(String to, String kind, String data) {}
 
     private String generateCode() {
         for (int attempt = 0; attempt < 20; attempt++) {
@@ -342,7 +406,8 @@ public class ThronesGameController {
         return new ResponseStatusException(HttpStatus.CONFLICT, message);
     }
 
-    record CreateRequest(String playerName, Double mapWidthMiles, Integer roundLimit, Boolean computerDead) {}
+    record CreateRequest(String playerName, Double mapWidthMiles, Integer roundLimit, Boolean computerDead,
+                         String chatMode) {}
     record JoinRequest(String playerName, String houseId, String heir) {}
     record MoveRequest(double x, double y) {}
     record TargetRequest(String targetId) {}
@@ -368,6 +433,6 @@ public class ThronesGameController {
                        List<PactView> pacts, List<ProposalView> proposals, FateView fate, String crownHolder,
                        int crownStreak, boolean wallBreached, boolean iceDragon, List<String> winners,
                        String winnerText, List<String> events, BattleLog lastBattle, List<double[]> wall,
-                       List<String> turnOrder, int recruitCost, List<PlaceView> places) {}
+                       List<String> turnOrder, int recruitCost, List<PlaceView> places, String chatMode) {}
     record PlaceView(String name, String kind, double x, double y, String region) {}
 }

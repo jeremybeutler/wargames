@@ -32,6 +32,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -78,15 +79,17 @@ public class GameSessionController {
     private final PlaceRepository places;
     private final TerrainRegionRepository terrainRegions;
     private final ObjectMapper objectMapper;
+    private final ChatService chat;
 
     public GameSessionController(GameSessionRepository games, CampaignRepository campaigns,
                                  PlaceRepository places, TerrainRegionRepository terrainRegions,
-                                 ObjectMapper objectMapper) {
+                                 ObjectMapper objectMapper, ChatService chat) {
         this.games = games;
         this.campaigns = campaigns;
         this.places = places;
         this.terrainRegions = terrainRegions;
         this.objectMapper = objectMapper;
+        this.chat = chat;
     }
 
     @PostMapping
@@ -116,6 +119,7 @@ public class GameSessionController {
         room.hostTokenHash = SeatSessions.hash(hostSecret);
         room.hostName = playerName;
         room.mapWidthMiles = mapWidthMiles;
+        room.chatMode = ChatService.mode(request.chatMode());
         room.ringHolder = "frodo";
         room.createdAt = Instant.now().toString();
         for (Party template : roster(players)) {
@@ -662,7 +666,7 @@ public class GameSessionController {
             activeCharacter, room.ringHolder, room.winner, partyViews, objectiveViews,
             List.copyOf(room.events), seatViews, host, ownParty == null ? null : ownParty.id,
             room.hostName, room.createdAt, room.mountDoomX, room.mountDoomY, MOUNT_DOOM_REACH,
-            room.lastBattle);
+            room.lastBattle, room.chatMode == null ? ChatService.TEXT : room.chatMode);
     }
 
     /**
@@ -756,6 +760,63 @@ public class GameSessionController {
         return Math.hypot(x1 - x2, y1 - y2) < 0.5;
     }
 
+    // ------------------------------------------------------------------ table talk (ChatService)
+
+    @GetMapping("/{code}/chat")
+    public List<ChatService.MessageView> chatMessages(@PathVariable String code, HttpServletRequest http,
+                                                      @RequestParam(required = false) Long since) {
+        Room room = loadRoom(code);
+        chatSpeaker(room, http);
+        return chat.messages(room.code, room.chatMode, since);
+    }
+
+    @PostMapping("/{code}/chat")
+    public ChatService.MessageView sendChat(@PathVariable String code, HttpServletRequest http,
+                                            @RequestBody ChatRequest request) {
+        Room room = loadRoom(code);
+        return chat.send(room.code, room.chatMode, chatSpeaker(room, http), request.text());
+    }
+
+    @PostMapping("/{code}/voice/join")
+    public ChatService.VoiceView joinVoice(@PathVariable String code, HttpServletRequest http,
+                                           @RequestBody VoiceJoinRequest request) {
+        Room room = loadRoom(code);
+        return chat.joinVoice(room.code, room.chatMode, chatSpeaker(room, http), Boolean.TRUE.equals(request.muted()));
+    }
+
+    @PostMapping("/{code}/voice/leave")
+    public void leaveVoice(@PathVariable String code, HttpServletRequest http) {
+        Room room = loadRoom(code);
+        chat.leaveVoice(room.code, chatSpeaker(room, http).seat());
+    }
+
+    @PostMapping("/{code}/voice/signal")
+    public void voiceSignal(@PathVariable String code, HttpServletRequest http, @RequestBody VoiceSignalRequest request) {
+        Room room = loadRoom(code);
+        chat.signal(room.code, room.chatMode, chatSpeaker(room, http).seat(), request.to(), request.kind(), request.data());
+    }
+
+    @GetMapping("/{code}/voice")
+    public ChatService.VoiceView pollVoice(@PathVariable String code, HttpServletRequest http,
+                                           @RequestParam(defaultValue = "0") long since) {
+        Room room = loadRoom(code);
+        return chat.pollVoice(room.code, room.chatMode, chatSpeaker(room, http).seat(), since);
+    }
+
+    /** Only seat holders (the host and players) may chat. */
+    private ChatService.Speaker chatSpeaker(Room room, HttpServletRequest http) {
+        String seat = authenticate(room, http);
+        if (seat == null) throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Take a seat to join the conversation.");
+        if (SeatSessions.HOST_SEAT.equals(seat)) return new ChatService.Speaker(seat, room.hostName + " (host)", null);
+        Party party = party(room, seat);
+        String player = party.playerName == null ? party.name : party.playerName;
+        return new ChatService.Speaker(seat, player + " · " + party.name, party.team);
+    }
+
+    record ChatRequest(String text) {}
+    record VoiceJoinRequest(Boolean muted) {}
+    record VoiceSignalRequest(String to, String kind, String data) {}
+
     private static Party party(Room room, String characterId) {
         return room.parties.stream().filter(item -> item.id.equals(characterId)).findFirst()
             .orElseThrow(() -> badRequest("Choose a valid character seat."));
@@ -794,7 +855,7 @@ public class GameSessionController {
         return new ResponseStatusException(HttpStatus.CONFLICT, message);
     }
 
-    private record CreateGameRequest(String playerName, Double mapWidthMiles, Integer players) {}
+    private record CreateGameRequest(String playerName, Double mapWidthMiles, Integer players, String chatMode) {}
     private record JoinGameRequest(String playerName, String characterId, String representative) {}
     private record CharacterRequest(String characterId) {}
     private record MoveRequest(String characterId, double x, double y) {}
@@ -818,7 +879,7 @@ public class GameSessionController {
                             List<String> events, List<SeatView> seats, boolean host,
                             String ownCharacterId, String hostName, String createdAt,
                             double mountDoomX, double mountDoomY, double mountDoomReach,
-                            BattleLog lastBattle) {}
+                            BattleLog lastBattle, String chatMode) {}
 
     // ignoreUnknown keeps rooms saved with the retired ringInterceptionDefenderId field loadable.
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -848,6 +909,8 @@ public class GameSessionController {
         public BattleLog lastBattle;
         /** Counts battles so clients can tell a new roll from one they've already shown. */
         public int battleCount;
+        /** Table talk the host chose: off, text, voice or both (null on older saves: text). */
+        public String chatMode;
     }
 
     public static class BattleLog {

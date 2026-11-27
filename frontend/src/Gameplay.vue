@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import QRCode from 'qrcode'
+import TableTalk from './TableTalk.vue'
 
 const emit = defineEmits(['open-map-editor', 'open-thrones'])
 const roster = [
@@ -54,6 +55,17 @@ const playerName = ref('')
 const hostName = ref('')
 const mapWidthMiles = ref(1000)
 const playerCount = ref(6)
+// Table talk for the game, chosen by the host: off, text, voice or both.
+const chatMode = ref('text')
+const CHAT_MODES = [
+  { id: 'off', label: 'Off', hint: 'No table talk' },
+  { id: 'text', label: 'Text', hint: 'Live messages' },
+  { id: 'voice', label: 'Voice', hint: 'Talk out loud' },
+  { id: 'both', label: 'Text + voice', hint: 'Both' },
+]
+function teamColor(side) {
+  return side === 'Free Peoples' ? '#8fd0bd' : side ? '#ee9a78' : ''
+}
 const hostRoster = computed(() => roster.filter(party => !party.expansion || playerCount.value === 8))
 const rulesOpen = ref(false)
 function closeRulesOnEscape(event) {
@@ -514,7 +526,7 @@ async function hostGame() {
   try {
     const response = await apiRequest('/api/games', {
       method: 'POST',
-      body: JSON.stringify({ playerName: hostName.value, mapWidthMiles: mapWidthMiles.value, players: playerCount.value }),
+      body: JSON.stringify({ playerName: hostName.value, mapWidthMiles: mapWidthMiles.value, players: playerCount.value, chatMode: chatMode.value }),
     })
     saveGame(response)
   } catch (requestError) {
@@ -1520,6 +1532,11 @@ onBeforeUnmount(() => {
 
 <template>
   <main class="game-app" :class="{ 'tv-mode': tvMode }">
+    <TableTalk v-if="game && currentSeat && game.chatMode && game.chatMode !== 'off'
+        && ['lobby', 'campaign', 'character'].includes(currentView)"
+      :key="`${game.code}:${currentSeat}`" :api-base="`/api/games/${game.code}`" :seat="currentSeat"
+      :mode="game.chatMode" :side-color="teamColor"
+      :left="currentView === 'campaign' && !isCompact ? (tvMode ? '344px' : '264px') : '14px'" />
     <header class="game-topbar">
       <a class="game-brand" href="#" aria-label="War Games home" @click.prevent="backHome">
         <span class="game-brand-mark">W</span>
@@ -1681,6 +1698,13 @@ onBeforeUnmount(() => {
           <button v-for="count in [6, 8]" :key="count" type="button" role="radio" :aria-checked="playerCount === count"
             :class="{ selected: playerCount === count }" @click="playerCount = count">
             {{ count }} players<small>{{ count === 8 ? 'Elves & Ringwraiths expansion' : 'Classic' }}</small>
+          </button>
+        </div>
+        <span class="setup-label">TABLE TALK</span>
+        <div class="chat-mode" role="radiogroup" aria-label="Table talk">
+          <button v-for="option in CHAT_MODES" :key="option.id" type="button" role="radio" :aria-checked="chatMode === option.id"
+            :class="{ selected: chatMode === option.id }" @click="chatMode = option.id">
+            {{ option.label }}<small>{{ option.hint }}</small>
           </button>
         </div>
         <div class="roster-group free-group">
@@ -2914,6 +2938,11 @@ onBeforeUnmount(() => {
   .host-sidebar .roster-group { width: 100%; }
   .host-sidebar .dark-group { margin-left: 0; }
 }
+/* Table talk choice on the host's setup screen */
+.chat-mode { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; margin-bottom: 12px; }
+.chat-mode button { padding: 7px 4px; border: 1px solid var(--cine-line, rgba(217,178,106,.16)); border-radius: 6px; background: rgba(6,5,8,.7); color: #ddd1b6; font: 600 11px var(--cine-title, serif); letter-spacing: .4px; cursor: pointer; text-align: center; }
+.chat-mode button small { display: block; margin-top: 2px; color: var(--cine-dim, #6d6557); font: 500 9px var(--cine-body, sans-serif); letter-spacing: 0; }
+.chat-mode button.selected { border-color: var(--cine-gold, #d9b26a); background: linear-gradient(#2a2216, #17120c); color: var(--cine-gold-hi, #f4dc9c); box-shadow: 0 0 16px rgba(217,178,106,.16); }
 /* Cinematic theme on phones: dock, sheet and bottom nav surfaces. */
 @media (max-width: 760px) {
   .mobile-dock { border-top: 1px solid var(--cine-line-strong); background: linear-gradient(180deg, rgba(18,16,21,.97), rgba(8,7,10,.99)); box-shadow: 0 -12px 30px rgba(0,0,0,.6); }
