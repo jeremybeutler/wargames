@@ -27,8 +27,11 @@ final class ThronesState {
         public List<String> turnOrderIds = new ArrayList<>();
         public List<House> houses = new ArrayList<>();
         public List<Castle> castles = new ArrayList<>();
-        public List<Pact> pacts = new ArrayList<>();
-        public List<Proposal> proposals = new ArrayList<>();
+        public List<Coalition> coalitions = new ArrayList<>();
+        public List<Invite> invites = new ArrayList<>();
+        /** Set once Winter first falls, so everyone sees the Long Night begin. */
+        public boolean longNight;
+        public int coalitionCount;
         public List<String> events = new ArrayList<>();
         /** The round in which Winter begins; Fate can bring it sooner. */
         public int winterRound = ThronesRules.DEFAULT_WINTER_ROUND;
@@ -37,9 +40,6 @@ final class ThronesState {
         public List<String> fateDeck = new ArrayList<>();
         public String fate;
         public int fateRound;
-        public String crownHolder;
-        public int crownStreak;
-        public int crownSince;
         public boolean wallBreached;
         public boolean iceDragon;
         public boolean dragonsHatched;
@@ -69,6 +69,8 @@ final class ThronesState {
         public boolean claimed;
         /** Played by the server (the Dead only). */
         public boolean ai;
+        /** "easy" or "hard" when a bot plays this house; it competes like a player. */
+        public String bot;
         public boolean alive;
         public boolean hidden;
         public int visibleUntilRound = -1;
@@ -79,15 +81,16 @@ final class ThronesState {
         public double movementMax = ThronesRules.MOVEMENT_POINTS;
         public double movementRemaining = ThronesRules.MOVEMENT_POINTS;
         public int recruitedThisTurn;
-        public boolean fortifiedThisTurn;
-        public boolean hiredThisTurn;
         public boolean powerUsed;
         public boolean screamers;
-        /** Set when this house breaks a pact: attacks on that house this turn get the Red Wedding bonus. */
-        public String redWeddingTarget;
+        /** Set when this house leaves a coalition: attacks on its former allies this turn get the Red Wedding bonus. */
+        public List<String> redWeddingTargets = new ArrayList<>();
+        /** After leaving a coalition, the house can't join or invite anyone until after this round. */
         public int oathbreakerUntil;
-        /** The round a loan must be repaid by; 0 when there is none. */
-        public int loanDue;
+        /** A Royal Wedding binds the house to its coalition until after this round. */
+        public int lockedUntil;
+        /** Fought the Dead during the Long Night while in a coalition: a sworn bond (see ThronesGame.sworn). */
+        public boolean forged;
         public List<String> dragons = new ArrayList<>();
         /** The side of the Wall the party came from when it stepped onto it: -1 north, 1 south. */
         public int wallFrom;
@@ -109,41 +112,30 @@ final class ThronesState {
         public boolean port;
     }
 
+    /** Houses sworn together: they can't attack each other, see each other's armies and win together. */
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public static class Pact {
-        public String a;
-        public String b;
+    public static class Coalition {
+        public String id;
+        public List<String> members = new ArrayList<>();
         public int sinceRound;
-        /** A Royal Wedding pact cannot be broken before this round. */
-        public int lockedUntil;
 
-        public Pact() {}
+        public Coalition() {}
 
-        Pact(String a, String b, int sinceRound, int lockedUntil) {
-            this.a = a;
-            this.b = b;
+        Coalition(String id, int sinceRound) {
+            this.id = id;
             this.sinceRound = sinceRound;
-            this.lockedUntil = lockedUntil;
-        }
-
-        boolean joins(String first, String second) {
-            return (a.equals(first) && b.equals(second)) || (a.equals(second) && b.equals(first));
-        }
-
-        String other(String id) {
-            return a.equals(id) ? b : a;
         }
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public static class Proposal {
+    public static class Invite {
         public String from;
         public String to;
         public boolean royal;
 
-        public Proposal() {}
+        public Invite() {}
 
-        Proposal(String from, String to, boolean royal) {
+        Invite(String from, String to, boolean royal) {
             this.from = from;
             this.to = to;
             this.royal = royal;

@@ -10,7 +10,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.function.BiConsumer;
 import org.springframework.http.HttpStatus;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -40,16 +42,21 @@ public class ThronesGameController {
     private final ObjectMapper objectMapper;
     private final ThronesMap map;
     private final ThronesGame game;
+    private final BotScheduler bots;
+    private final TransactionTemplate transactions;
 
     private final ChatService chat;
 
     public ThronesGameController(GameSessionRepository games, ObjectMapper objectMapper, ThronesMap map,
-                                 ChatService chat) {
+                                 BotScheduler bots, PlatformTransactionManager transactionManager, ChatService chat) {
         this.chat = chat;
         this.games = games;
         this.objectMapper = objectMapper;
         this.map = map;
         this.game = new ThronesGame(map, RANDOM);
+        this.game.inlineAi = false;   // the Dead's turns are paced by BotScheduler
+        this.bots = bots;
+        this.transactions = new TransactionTemplate(transactionManager);
     }
 
     @PostMapping
@@ -58,11 +65,9 @@ public class ThronesGameController {
         String name = cleanName(request.playerName());
         double miles = request.mapWidthMiles() == null ? 2500 : request.mapWidthMiles();
         if (miles < 1000 || miles > 6000) throw badRequest("Map width must be between 1,000 and 6,000 miles.");
-        int rounds = request.roundLimit() == null ? 20 : request.roundLimit();
-        if (rounds < 8 || rounds > 40) throw badRequest("Choose between 8 and 40 rounds.");
         String secret = SeatSessions.newSecret();
-        Room room = game.create(generateCode(), name, SeatSessions.hash(secret), miles, rounds,
-            request.computerDead() == null || request.computerDead(), Instant.now().toString());
+        // There is no round limit any more, and the server always plays the Dead.
+        Room room = game.create(generateCode(), name, SeatSessions.hash(secret), miles, 0, true, Instant.now().toString());
         room.chatMode = ChatService.mode(request.chatMode());
         save(room);
         SeatSessions.issue(http, response, API_PATH, room.code, SeatSessions.HOST_SEAT, secret);
@@ -77,6 +82,7 @@ public class ThronesGameController {
         if (seat == null && !"lobby".equals(room.status)) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "A seat on this device is required.");
         }
+        scheduleBots(room);
         return view(room, seat);
     }
 
@@ -98,6 +104,105 @@ public class ThronesGameController {
         save(room);
         SeatSessions.issue(http, response, API_PATH, room.code, request.houseId(), secret);
         return view(room, request.houseId());
+    }
+
+    /**
+     * Host only, in the lobby: a bot claims {@code houseId}, or every unclaimed house (but the
+     * Dead) when none is named. {@code difficulty} is "easy" or "hard".
+     */
+    @PostMapping("/{code}/bots")
+    @Transactional
+    public ThronesView addBots(@PathVariable String code, @RequestBody BotRequest request, HttpServletRequest http) {
+        Room room = load(code);
+        String seat = requireHostInLobby(room, http);
+        String level = request.difficulty() == null || ThronesBot.EASY.equalsIgnoreCase(request.difficulty()) ? ThronesBot.EASY
+            : ThronesBot.HARD.equalsIgnoreCase(request.difficulty()) ? ThronesBot.HARD : null;
+        if (level == null) throw badRequest("Bot difficulty must be easy or hard.");
+        List<House> targets = request.houseId() == null || request.houseId().isBlank()
+            ? room.houses.stream().filter(house -> !house.claimed && !ThronesRules.isDead(house.id)).toList()
+            : List.of(rulesHouse(room, request.houseId()));
+        if (targets.isEmpty()) throw conflict("Every house is already claimed.");
+        for (House house : targets) {
+            if (ThronesRules.isDead(house.id)) {
+                throw badRequest("Leave the Dead unclaimed and let the server play them instead.");
+            }
+            if (house.claimed) throw conflict(house.name + " is already claimed.");
+            if (targets.size() == 1 && request.heir() != null && !request.heir().isBlank()) {
+                String heir = request.heir().trim();
+                if (!house.heirs.contains(heir)) throw badRequest(heir + " is not of " + house.name + ".");
+                house.heirs.remove(heir);
+                house.heirs.add(0, heir);
+                house.leader = heir;
+            }
+            house.claimed = true;
+            house.bot = level;
+            house.playerName = ThronesBot.HARD.equals(level) ? "Bot (hard)" : "Bot (easy)";
+            room.events.add((ThronesBot.EASY.equals(level) ? "An easy" : "A hard") + " bot claimed " + house.name + ".");
+        }
+        save(room);
+        return view(room, seat);
+    }
+
+    /** Host only, in the lobby: frees a bot's house for a player. */
+    @DeleteMapping("/{code}/bots/{houseId}")
+    @Transactional
+    public ThronesView removeBot(@PathVariable String code, @PathVariable String houseId, HttpServletRequest http) {
+        Room room = load(code);
+        String seat = requireHostInLobby(room, http);
+        House house = rulesHouse(room, houseId);
+        if (house.bot == null) throw conflict(house.name + " is not played by a bot.");
+        house.bot = null;
+        house.claimed = false;
+        house.playerName = null;
+        room.events.add(house.name + "'s bot left; the house is open.");
+        save(room);
+        return view(room, seat);
+    }
+
+    private String requireHostInLobby(Room room, HttpServletRequest http) {
+        String seat = authenticate(room, http);
+        if (!SeatSessions.HOST_SEAT.equals(seat)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Only the host can add or remove bots.");
+        }
+        if (!"lobby".equals(room.status)) throw conflict("Bots can only be changed before the game starts.");
+        return seat;
+    }
+
+    private static House rulesHouse(Room room, String houseId) {
+        try {
+            return ThronesGame.house(room, houseId);
+        } catch (RuleException unknown) {
+            throw badRequest(unknown.getMessage());
+        }
+    }
+
+    /**
+     * Plays one bot turn (called by the BotScheduler, under this game's lock) in its own
+     * transaction, which commits before the lock is released.
+     */
+    void playBotTurn(String code) {
+        transactions.executeWithoutResult(status -> playBotTurnNow(code));
+    }
+
+    private void playBotTurnNow(String code) {
+        Room room;
+        try {
+            room = load(code);
+        } catch (ResponseStatusException gone) {
+            return;
+        }
+        if (!"campaign".equals(room.status) || !room.winners.isEmpty()) return;
+        House bot = game.current(room);
+        if (bot.bot == null || !bot.alive) return;
+        ThronesBot.playTurn(game, map, room, bot, RANDOM);
+        save(room);
+    }
+
+    /** Queues the next bot turn if a bot house is to act. */
+    private void scheduleBots(Room room) {
+        if (!"campaign".equals(room.status) || !room.winners.isEmpty()) return;
+        if (game.turnOrder(room).isEmpty()) return;
+        if (game.current(room).bot != null) bots.schedule(room.code, this::playBotTurn, room.lastBattle == null ? null : room.lastBattle.id);
     }
 
     @PostMapping("/{code}/start")
@@ -156,62 +261,31 @@ public class ThronesGameController {
         return act(code, http, (room, house) -> game.recruit(room, house, request.count() == null ? 1 : request.count()));
     }
 
-    @PostMapping("/{code}/fortify")
-    @Transactional
-    public ThronesView fortify(@PathVariable String code, HttpServletRequest http) {
-        return act(code, http, (room, house) -> game.fortify(room, house));
-    }
-
-    @PostMapping("/{code}/sellswords")
-    @Transactional
-    public ThronesView sellswords(@PathVariable String code, HttpServletRequest http) {
-        return act(code, http, (room, house) -> game.hireSellswords(room, house));
-    }
-
-    @PostMapping("/{code}/loan")
-    @Transactional
-    public ThronesView loan(@PathVariable String code, HttpServletRequest http) {
-        return act(code, http, (room, house) -> game.takeLoan(room, house));
-    }
-
-    @PostMapping("/{code}/repay")
-    @Transactional
-    public ThronesView repay(@PathVariable String code, HttpServletRequest http) {
-        return act(code, http, (room, house) -> game.repayLoan(room, house));
-    }
-
-    @PostMapping("/{code}/bribe")
-    @Transactional
-    public ThronesView bribe(@PathVariable String code, HttpServletRequest http) {
-        return act(code, http, (room, house) -> game.bribe(room, house));
-    }
-
     @PostMapping("/{code}/power")
     @Transactional
     public ThronesView power(@PathVariable String code, @RequestBody TargetRequest request, HttpServletRequest http) {
         return act(code, http, (room, house) -> game.usePower(room, house, request.targetId()));
     }
 
-    @PostMapping("/{code}/pacts/propose")
-    @Transactional
-    public ThronesView propose(@PathVariable String code, @RequestBody PactRequest request, HttpServletRequest http) {
-        return act(code, http, (room, house) -> {
-            if (!house.alive) throw new RuleException(house.name + " is no more.");
-            game.propose(room, house, request.houseId(), Boolean.TRUE.equals(request.royal()));
-        }, false);
+    // Invitations can be sent and answered at any time, even while a bot is taking its turn, so
+    // they run under that game's lock (not one transaction): the load and the save can't
+    // interleave with a bot's.
+    @PostMapping("/{code}/coalitions/invite")
+    public ThronesView invite(@PathVariable String code, @RequestBody CoalitionRequest request, HttpServletRequest http) {
+        return BotScheduler.withLock(code.toUpperCase(Locale.ROOT), () -> act(code, http, (room, house) ->
+            game.invite(room, house, request.houseId(), Boolean.TRUE.equals(request.royal())), false));
     }
 
-    @PostMapping("/{code}/pacts/respond")
-    @Transactional
-    public ThronesView respond(@PathVariable String code, @RequestBody PactRequest request, HttpServletRequest http) {
-        return act(code, http, (room, house) -> game.respond(room, house, request.houseId(),
-            Boolean.TRUE.equals(request.accept())), false);
+    @PostMapping("/{code}/coalitions/respond")
+    public ThronesView respond(@PathVariable String code, @RequestBody CoalitionRequest request, HttpServletRequest http) {
+        return BotScheduler.withLock(code.toUpperCase(Locale.ROOT), () -> act(code, http, (room, house) ->
+            game.respond(room, house, request.houseId(), Boolean.TRUE.equals(request.accept())), false));
     }
 
-    @PostMapping("/{code}/pacts/break")
+    @PostMapping("/{code}/coalitions/leave")
     @Transactional
-    public ThronesView breakPact(@PathVariable String code, @RequestBody PactRequest request, HttpServletRequest http) {
-        return act(code, http, (room, house) -> game.breakPact(room, house, request.houseId()));
+    public ThronesView leave(@PathVariable String code, HttpServletRequest http) {
+        return act(code, http, (room, house) -> game.leave(room, house));
     }
 
     private ThronesView act(String code, HttpServletRequest http, BiConsumer<Room, House> action) {
@@ -284,6 +358,7 @@ public class ThronesGameController {
         } catch (JsonProcessingException error) {
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Could not save the game.", error);
         }
+        scheduleBots(room);
     }
 
     // ------------------------------------------------------------------ view
@@ -300,24 +375,25 @@ public class ThronesGameController {
                 show ? house.units : null, show ? house.x : null, show ? house.y : null, house.gold, house.playerName,
                 house.claimed, house.ai, house.alive, house.hidden, show ? house.terrain : null,
                 show ? house.moved : null, show ? house.attacked : null, house.attacksLeft, house.movementRemaining,
-                house.movementMax, house.powerUsed, house.oathbreakerUntil, house.loanDue, house.dragons,
-                started ? game.income(room, house) : 0, game.greatSeats(room, house.id),
-                ThronesRules.house(house.id).power(), house.recruitedThisTurn, house.fortifiedThisTurn, house.hiredThisTurn,
-                house.screamers);
+                house.movementMax, house.powerUsed, house.oathbreakerUntil, house.lockedUntil, house.dragons,
+                started ? game.income(room, house) : 0, castlesHeld(room, house.id),
+                ThronesRules.house(house.id).power(), house.recruitedThisTurn, house.screamers, house.bot,
+                ThronesRules.isDead(house.id), house.forged, started && house.alive && game.sworn(room, house));
         }).toList();
         List<CastleView> castles = room.castles.stream().map(castle -> new CastleView(castle.id, castle.name, castle.kind,
-            castle.region, castle.x, castle.y, castle.owner, castle.units, castle.initialUnits, castle.great, castle.port,
-            ThronesRules.NEUTRAL.equals(castle.owner) ? ThronesGame.bribeCost(castle) : null)).toList();
+            castle.region, castle.x, castle.y, castle.owner, castle.units, castle.initialUnits, castle.great, castle.port))
+            .toList();
         ThronesRules.Fate fate = room.fate == null ? null : ThronesRules.fate(room.fate);
         List<String> events = room.events.size() > 120 ? room.events.subList(room.events.size() - 120, room.events.size())
             : room.events;
-        return new ThronesView(room.code, room.status, room.round, room.roundLimit, game.season(room), room.winterRound,
-            room.snowLine, room.mapWidthMiles, host, own == null ? null : own.id, room.hostName, room.computerDead,
+        return new ThronesView(room.code, room.status, room.round, game.season(room), room.winterRound, room.longNight,
+            room.snowLine, room.mapWidthMiles, host, own == null ? null : own.id, room.hostName,
             active == null ? null : active.id, houses, castles,
-            room.pacts.stream().map(pact -> new PactView(pact.a, pact.b, pact.sinceRound, pact.lockedUntil)).toList(),
-            room.proposals.stream().map(p -> new ProposalView(p.from, p.to, p.royal)).toList(),
+            room.coalitions.stream().map(coalition -> new CoalitionView(coalition.id, List.copyOf(coalition.members),
+                coalition.sinceRound)).toList(),
+            room.invites.stream().map(invite -> new InviteView(invite.from, invite.to, invite.royal)).toList(),
             fate == null ? null : new FateView(fate.id(), fate.title(), fate.text(), room.fateRound, room.fateCount),
-            room.crownHolder, room.crownStreak, room.wallBreached, room.iceDragon, room.winners, room.winnerText,
+            room.castles.size(), room.wallBreached, room.iceDragon, room.winners, room.winnerText,
             List.copyOf(events), room.lastBattle, map.wall(), started ? List.copyOf(room.turnOrderIds) : List.of(),
             own == null || !started ? 0 : game.recruitCost(room, own),
             map.places().stream().map(place -> new PlaceView(place.name(), place.kind(), place.x(), place.y(),
@@ -382,6 +458,10 @@ public class ThronesGameController {
     record VoiceJoinRequest(Boolean muted) {}
     record VoiceSignalRequest(String to, String kind, String data) {}
 
+    private static long castlesHeld(Room room, String houseId) {
+        return room.castles.stream().filter(castle -> castle.owner.equals(houseId)).count();
+    }
+
     private String generateCode() {
         for (int attempt = 0; attempt < 20; attempt++) {
             StringBuilder code = new StringBuilder();
@@ -412,26 +492,27 @@ public class ThronesGameController {
     record MoveRequest(double x, double y) {}
     record TargetRequest(String targetId) {}
     record CountRequest(Integer count) {}
-    record PactRequest(String houseId, Boolean royal, Boolean accept) {}
+    record CoalitionRequest(String houseId, Boolean royal, Boolean accept) {}
+    record BotRequest(String houseId, String difficulty, String heir) {}
     record SegmentView(String terrain, double miles, double movementPoints) {}
     record PreviewView(double x, double y, double miles, double movementPoints, double remaining, int riverCrossings,
                        String destinationTerrain, String mode, List<SegmentView> segments, String error) {}
     record HouseView(String id, String name, String seat, String leader, List<String> heirs, int heirIndex,
                      Integer units, Double x, Double y, int gold, String playerName, boolean claimed, boolean ai,
                      boolean alive, boolean hidden, String terrain, Boolean moved, Boolean attacked, int attacksLeft,
-                     double movementRemaining, double movementMax, boolean powerUsed, int oathbreakerUntil, int loanDue,
-                     List<String> dragons, int income, long greatSeats, String power, int recruitedThisTurn,
-                     boolean fortifiedThisTurn, boolean hiredThisTurn, boolean screamers) {}
+                     double movementRemaining, double movementMax, boolean powerUsed, int oathbreakerUntil, int lockedUntil,
+                     List<String> dragons, int income, long castles, String power, int recruitedThisTurn,
+                     boolean screamers, String bot, boolean dead, boolean forged, boolean sworn) {}
     record CastleView(String id, String name, String kind, String region, double x, double y, String owner, int units,
-                      int initialUnits, boolean great, boolean port, Integer bribeCost) {}
-    record PactView(String a, String b, int sinceRound, int lockedUntil) {}
-    record ProposalView(String from, String to, boolean royal) {}
+                      int initialUnits, boolean great, boolean port) {}
+    record CoalitionView(String id, List<String> members, int sinceRound) {}
+    record InviteView(String from, String to, boolean royal) {}
     record FateView(String id, String title, String text, int round, int count) {}
-    record ThronesView(String code, String status, int round, int roundLimit, String season, int winterRound,
+    record ThronesView(String code, String status, int round, String season, int winterRound, boolean longNight,
                        double snowLine, double mapWidthMiles, boolean host, String ownHouseId, String hostName,
-                       boolean computerDead, String activeHouse, List<HouseView> houses, List<CastleView> castles,
-                       List<PactView> pacts, List<ProposalView> proposals, FateView fate, String crownHolder,
-                       int crownStreak, boolean wallBreached, boolean iceDragon, List<String> winners,
+                       String activeHouse, List<HouseView> houses, List<CastleView> castles,
+                       List<CoalitionView> coalitions, List<InviteView> invites, FateView fate, int totalCastles,
+                       boolean wallBreached, boolean iceDragon, List<String> winners,
                        String winnerText, List<String> events, BattleLog lastBattle, List<double[]> wall,
                        List<String> turnOrder, int recruitCost, List<PlaceView> places, String chatMode) {}
     record PlaceView(String name, String kind, double x, double y, String region) {}

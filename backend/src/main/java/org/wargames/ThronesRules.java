@@ -16,18 +16,11 @@ final class ThronesRules {
     static final double SNOW_STEP_AUTUMN = 3;
     static final double SNOW_STEP_WINTER = 4;
     static final int DRAGON_HATCH_ROUND = 4;
-    static final int CROWN_ROUNDS_TO_WIN = 3;
-    static final int GREAT_SEATS_TO_WIN = 7;
-    static final int SEATS_FOR_NIGHT_KING_SLAYER = 3;
-    static final int DEAD_CASTLES_TO_WIN = 5;
     static final int MAX_RECRUITS_PER_TURN = 2;
-    static final int FORTIFY_COST = 2;
-    static final int SELLSWORD_COST = 4;
-    static final int SELLSWORD_UNITS = 2;
-    static final int LOAN = 6;
-    static final int LOAN_REPAYMENT = 8;
-    static final int LOAN_ROUNDS = 4;
+    static final int MIN_HOUSES = 2;
     static final int OATHBREAKER_ROUNDS = 3;
+    /** Sworn bonds: forged members of a coalition get this much on every die. */
+    static final int SWORN_BONUS = 1;
     static final int ROYAL_WEDDING_ROUNDS = 5;
     static final double FLYING_MILES_PER_POINT = 20;
     static final double SAILING_MILES_PER_POINT = 30;
@@ -35,6 +28,7 @@ final class ThronesRules {
     static final double SNAP_REACH = 0.9;
 
     static final String NEUTRAL = "neutral";
+    /** The Night King's host. The Dead are three armies on one team; every Dead id starts with "dead". */
     static final String DEAD = "dead";
     static final String NIGHT_KING = "Night King";
     static final String KINGS_LANDING = "King's Landing";
@@ -70,8 +64,17 @@ final class ThronesRules {
         new HouseDef("martell", "House Martell", "Sunspear", 2,
             List.of("Doran Martell", "Oberyn Martell", "Ellaria Sand"),
             "The Viper's Duel"),
-        new HouseDef(DEAD, "The Dead", DEAD_HOME, 3, List.of(NIGHT_KING), "The Long Night")
+        new HouseDef(DEAD, "The Night King's Host", DEAD_HOME, 3, List.of(NIGHT_KING), "The Long Night"),
+        new HouseDef("deadfrost", "The Frostfang Host", "The Fist of the First Men", 2,
+            List.of("White Walker of the Frostfangs"), "The Long Night"),
+        new HouseDef("deadhard", "The Hardhome Host", "Hardhome", 2,
+            List.of("White Walker of Hardhome"), "The Long Night")
     );
+
+    /** True for any of the Dead's armies, and for castles they hold. */
+    static boolean isDead(String id) {
+        return id != null && id.startsWith(DEAD);
+    }
 
     static HouseDef house(String id) {
         return HOUSES.stream().filter(house -> house.id().equals(id)).findFirst().orElse(null);
@@ -85,21 +88,20 @@ final class ThronesRules {
     static final Set<String> CASTLE_KINDS = Set.of("capital", "seat", "castle", "city", "town");
     static final List<String> DRAGON_NAMES = List.of("Drogon", "Rhaegal", "Viserion");
 
-    private static final Map<String, Integer> GARRISONS = Map.ofEntries(
-        Map.entry(KINGS_LANDING, 3), Map.entry(CASTLE_BLACK, 4), Map.entry("Eastwatch-by-the-Sea", 2),
-        Map.entry("The Shadow Tower", 2), Map.entry(THE_EYRIE, 3), Map.entry("Storm's End", 3),
-        Map.entry("Riverrun", 2), Map.entry("The Twins", 2), Map.entry("Harrenhal", 2),
-        Map.entry("Moat Cailin", 2), Map.entry("Oldtown", 2), Map.entry(BRAAVOS, 3),
-        Map.entry("Volantis", 3), Map.entry("Qarth", 3), Map.entry("Meereen", 2), Map.entry("Yunkai", 2),
-        Map.entry("Astapor", 2));
+    /** The Wall holds out a little longer, so the Long Night is a fight rather than a stroll. */
+    private static final Map<String, Integer> GARRISONS = Map.of(CASTLE_BLACK, 3, "Eastwatch-by-the-Sea", 2,
+        "The Shadow Tower", 2);
 
-    /** The starting garrison of a castle that no playing house holds. */
+    /**
+     * The starting garrison of a castle no house holds. Kept small, because the goal is to hold
+     * every castle on the map: 2 for great seats and cities, 1 for the rest.
+     */
     static int neutralGarrison(String name, String kind) {
         Integer fixed = GARRISONS.get(name);
         if (fixed != null) return fixed;
+        if (GREAT_SEATS.contains(name)) return 2;
         return switch (kind) {
-            case "seat" -> 3;    // a seat whose house nobody plays
-            case "city" -> 2;
+            case "seat", "city", "capital" -> 2;
             default -> 1;
         };
     }
@@ -117,8 +119,7 @@ final class ThronesRules {
         new Fate("wildlings", "Wildling Raid", "Castle Black loses 1 garrison."),
         new Fate("tourney", "Tourney at the Capital", "Whoever holds King's Landing gains 1 unit."),
         new Fate("desertion", "Desertion", "Every army of 4 or more units loses 1."),
-        new Fate("sellswords", "Sellswords Flood the Market", "Levies cost 1 gold each this round."),
-        new Fate("ironbank", "The Iron Bank Calls", "The richest house pays 3 gold to the Bank."),
+        new Fate("levies", "Cheap Levies", "Levies cost 1 gold each this round."),
         new Fate("comet", "The Red Comet", "Dragon eggs hatch now. If they have hatched, House Targaryen gains 1 unit."),
         new Fate("kingsmoot", "Kingsmoot", "House Greyjoy gains 2 units."),
         new Fate("plague", "Plague in Flea Bottom", "King's Landing loses 1 garrison."),

@@ -115,6 +115,18 @@ if (-not $LocalOnly -and $Tunnel -eq 'tailscale') {
     }
 }
 
+# --- Stop a game server this script started earlier ------------------------
+# Rerunning play.ps1 restarts the game. A server still running from an earlier run holds the
+# jar (so it can't be rebuilt) and the database file, so stop it first. Only java processes
+# running this project's own jar are touched.
+$previous = @(Get-CimInstance Win32_Process -Filter "Name='java.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -and $_.CommandLine.Contains($jar) })
+foreach ($old in $previous) {
+    Write-Host "==> Stopping the game server from an earlier run (process $($old.ProcessId))" -ForegroundColor Cyan
+    Stop-Process -Id $old.ProcessId -Force -ErrorAction SilentlyContinue
+}
+if ($previous.Count) { Start-Sleep -Seconds 2 }
+
 # --- Build -------------------------------------------------------------------
 if (-not $SkipBuild) {
     Write-Host '==> Building the frontend' -ForegroundColor Cyan

@@ -9,7 +9,7 @@ export const HOUSES = {
   },
   lannister: {
     color: '#b3322b', ink: '#f3d27a', words: 'Hear Me Roar!',
-    passive: 'Hear Me Roar: +2 gold every turn. Buy a neutral castle by standing in it (2 gold per garrison unit).',
+    passive: 'Hear Me Roar: +2 gold every turn.',
     power: "Wildfire: at King's Landing, every enemy army there loses 2 units, and an enemy garrison loses 2.",
   },
   targaryen: {
@@ -30,7 +30,7 @@ export const HOUSES = {
   tyrell: {
     color: '#3f7a3a', ink: '#f0d26a', words: 'Growing Strong',
     passive: 'Growing Strong: levies cost 1 gold instead of 2.',
-    power: 'Royal Wedding: offer a pact that cannot be broken for 5 rounds; your partner gains 2 units when it is accepted.',
+    power: 'Royal Wedding: invite a house to your coalition; neither of you can leave for 5 rounds, and your partner gains 2 units.',
   },
   martell: {
     color: '#d97a2b', ink: '#5a1414', words: 'Unbowed, Unbent, Unbroken',
@@ -39,15 +39,33 @@ export const HOUSES = {
   },
   dead: {
     color: '#8fd3ee', ink: '#0f2733', words: 'The Long Night',
-    passive: 'Army of the Dead: every battle you win against an army raises another unit. Snow costs no extra movement. You cannot attack until Winter.',
+    passive: 'Three armies the server plays. Every battle they win against an army raises another unit, and each grows every round of Winter. They cannot attack until Winter.',
     power: 'The Long Night (Winter only): double movement for one turn.',
   },
 }
 
 export const NEUTRAL_COLOR = '#7c7a72'
 
+/** The Dead are three armies (ids dead, deadfrost, deadhard) that share one look. */
+export function isDead(id) {
+  return typeof id === 'string' && id.startsWith('dead')
+}
+
+/** Presentation for any house id, the Dead's armies included. */
+export function houseInfo(id) {
+  return HOUSES[isDead(id) ? 'dead' : id] || null
+}
+
 export function houseColor(id) {
-  return HOUSES[id]?.color || NEUTRAL_COLOR
+  return houseInfo(id)?.color || NEUTRAL_COLOR
+}
+
+export function houseInk(id) {
+  return houseInfo(id)?.ink || '#f3e6c4'
+}
+
+export function sigil(id) {
+  return SIGILS[isDead(id) ? 'dead' : id] || SIGILS.dead
 }
 
 // Simple original sigil shapes, drawn in a 24 x 24 box.

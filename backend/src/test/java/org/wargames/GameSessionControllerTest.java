@@ -344,6 +344,141 @@ class GameSessionControllerTest {
         assertFalse(party(room, "frodo").hidden);
     }
 
+    // ------------------------------------------------------------------ bots
+
+    /** Straight-line movement (1 point per 1.5% of map width); attacks, the Ring and turns use the real rules. */
+    private static final class BotTable implements WarBot.Actions {
+        final List<String> calls = new ArrayList<>();
+
+        @Override
+        public double cost(Room room, Party party, double x, double y) {
+            return WarBot.mapDistance(party.x, party.y, x, y) / 1.5;
+        }
+
+        @Override
+        public void move(Room room, Party party, double x, double y) {
+            calls.add("move");
+            party.movementRemaining -= cost(room, party, x, y);
+            party.moved = true;
+            moveTo(party, x, y);
+        }
+
+        @Override
+        public void attack(Room room, Party party, String targetId) {
+            calls.add("attack:" + targetId);
+            GameSessionController.applyAttack(room, party, targetId);
+        }
+
+        @Override
+        public void destroyRing(Room room, Party ringBearer) {
+            calls.add("destroy");
+            GameSessionController.resolveRingDestruction(room, ringBearer, () -> 6);
+        }
+
+        @Override
+        public void endTurn(Room room) {
+            calls.add("end");
+            GameSessionController.advanceTurn(room);
+        }
+    }
+
+    private static void botTurn(Room room, String id) {
+        room.turnIndex = GameSessionController.turnOrder(room).indexOf(party(room, id));
+    }
+
+    @Test
+    void aRingBearerBotDestroysTheRingAtMountDoom() {
+        Room room = room();
+        Party frodo = party(room, "frodo");
+        frodo.bot = "easy";
+        moveTo(frodo, DOOM_X, DOOM_Y);
+        botTurn(room, "frodo");
+        BotTable table = new BotTable();
+
+        WarBot.playTurn(room, frodo, table, new java.util.Random(1));
+
+        assertEquals(List.of("destroy"), table.calls);
+        assertEquals("Free Peoples", room.winner);
+    }
+
+    @Test
+    void aRingBearerBotMarchesOnMountDoomAndEndsItsTurn() {
+        Room room = room();
+        Party frodo = party(room, "frodo");
+        frodo.bot = "hard";
+        frodo.movementRemaining = 12;
+        botTurn(room, "frodo");
+        double before = WarBot.mapDistance(frodo.x, frodo.y, DOOM_X, DOOM_Y);
+        BotTable table = new BotTable();
+
+        WarBot.playTurn(room, frodo, table, new java.util.Random(1));
+
+        assertEquals(List.of("move", "end"), table.calls);
+        assertTrue(WarBot.mapDistance(frodo.x, frodo.y, DOOM_X, DOOM_Y) < before - 5);
+        assertEquals(1, room.turnIndex);
+    }
+
+    @Test
+    void aHardRingBearerBotStepsAroundEnemiesInItsPath() {
+        Room room = room();
+        for (Party party : room.parties) moveTo(party, 5, 90);     // everyone far away...
+        Party frodo = party(room, "frodo");
+        frodo.bot = "hard";
+        frodo.movementRemaining = 12;
+        moveTo(frodo, 50, 60);
+        Party sauron = party(room, "sauron");
+        moveTo(sauron, 64, 63);                                     // ...but Sauron, on the straight road east
+        botTurn(room, "frodo");
+        double before = WarBot.mapDistance(frodo.x, frodo.y, DOOM_X, DOOM_Y);
+
+        WarBot.playTurn(room, frodo, new BotTable(), new java.util.Random(1));
+
+        double straightStop = WarBot.mapDistance(50 + 18 * (DOOM_X - 50) / before, 60 + 36 * (DOOM_Y - 60) / before * 0.5,
+            sauron.x, sauron.y);
+        assertTrue(WarBot.mapDistance(frodo.x, frodo.y, DOOM_X, DOOM_Y) < before, "Frodo should still advance");
+        assertTrue(WarBot.mapDistance(frodo.x, frodo.y, sauron.x, sauron.y) > straightStop + 2,
+            "Frodo should keep clear of Sauron: " + frodo.x + "," + frodo.y);
+    }
+
+    @Test
+    void aHardBotAttacksOnlyWithGoodOdds() {
+        Room room = room();
+        Party aragorn = party(room, "aragorn");   // 3 units: 3 dice
+        Party saruman = party(room, "saruman");   // 2 units: 2 dice
+        aragorn.bot = "hard";
+        moveTo(saruman, aragorn.x, aragorn.y);
+        botTurn(room, "aragorn");
+        BotTable table = new BotTable();
+        WarBot.playTurn(room, aragorn, table, new java.util.Random(1));
+        assertEquals("attack:saruman", table.calls.get(0));
+
+        Room second = room();
+        Party lone = party(second, "aragorn");
+        lone.bot = "hard";
+        lone.units = 0;                            // a lone leader: 1 die
+        Party sauron = party(second, "sauron");    // 3 dice
+        moveTo(sauron, lone.x, lone.y);
+        botTurn(second, "aragorn");
+        BotTable cautious = new BotTable();
+        WarBot.playTurn(second, lone, cautious, new java.util.Random(1));
+        assertTrue(cautious.calls.stream().noneMatch(call -> call.startsWith("attack")), cautious.calls.toString());
+        assertTrue(cautious.calls.contains("end"));
+    }
+
+    @Test
+    void botSeatsCountAsTakenAndShowInTheLobby() {
+        Room room = room();
+        Party sauron = party(room, "sauron");
+        sauron.playerTokenHash = null;
+        assertFalse(GameSessionController.seatTaken(sauron));
+        sauron.bot = "hard";
+        assertTrue(GameSessionController.seatTaken(sauron));
+        GameSessionController.SeatView seat = GameSessionController.view(room, SeatSessions.HOST_SEAT).seats().stream()
+            .filter(view -> view.id().equals("sauron")).findFirst().orElseThrow();
+        assertTrue(seat.connected());
+        assertEquals("hard", seat.bot());
+    }
+
     private static GameSessionController.PartyView partyView(Room room, String seat, String id) {
         return GameSessionController.view(room, seat).parties().stream()
             .filter(view -> view.id().equals(id)).findFirst().orElseThrow();

@@ -10,9 +10,10 @@ import org.wargames.ThronesState.House;
 import org.wargames.ThronesState.Room;
 
 /**
- * Plays the Dead when no one claims them. Before Winter they wait beyond the Wall. In Winter
- * they call the Long Night, march on the nearest castle or army they can reach by land (a castle
- * on the Wall until it is breached) and attack whatever stands there.
+ * Plays one of the Dead's three armies. Before Winter they wait beyond the Wall. In Winter each
+ * calls the Long Night, marches on the nearest castle or army it can reach by land (a castle on
+ * the Wall until it is breached) and attacks whatever stands there. A target that another of the
+ * Dead's armies is closer to is left to that army, so the three spread out across the realm.
  */
 final class ThronesDeadAi {
     private final ThronesGame game;
@@ -26,7 +27,7 @@ final class ThronesDeadAi {
     void play(Room room, House dead) {
         if (!dead.alive) return;
         if (!game.winter(room)) {
-            room.events.add("The Dead wait beyond the Wall.");
+            if (ThronesRules.DEAD.equals(dead.id)) room.events.add("The Dead wait beyond the Wall.");
             return;
         }
         try {
@@ -59,19 +60,26 @@ final class ThronesDeadAi {
     double[] target(Room room, House dead) {
         List<double[]> candidates = new ArrayList<>();
         for (Castle castle : room.castles) {
-            if (castle.owner.equals(dead.id)) continue;
+            if (ThronesRules.isDead(castle.owner)) continue;
             if (!room.wallBreached && !ThronesRules.WALL_CASTLES.contains(castle.name)) continue;
             candidates.add(new double[] {castle.x, castle.y});
         }
         for (House house : room.houses) {
-            if (!house.alive || house == dead || house.hidden) continue;
+            if (!house.alive || ThronesRules.isDead(house.id) || house.hidden) continue;
             if (!room.wallBreached && map.wallSide(house.x, house.y) >= 0) continue;
             candidates.add(new double[] {house.x, house.y});
         }
-        return candidates.stream()
-            .filter(point -> map.waterFraction(dead.x, dead.y, point[0], point[1]) == 0)
-            .min(Comparator.comparingDouble(point -> ThronesMap.distance(dead.x, dead.y, point[0], point[1])))
-            .orElse(null);
+        List<House> others = room.houses.stream()
+            .filter(other -> other != dead && other.alive && ThronesRules.isDead(other.id)).toList();
+        List<double[]> reachable = candidates.stream()
+            .filter(point -> map.waterFraction(dead.x, dead.y, point[0], point[1]) == 0).toList();
+        Comparator<double[]> nearest = Comparator.comparingDouble(point -> ThronesMap.distance(dead.x, dead.y, point[0], point[1]));
+        // Leave a target to a fellow army that is closer to it, so the Dead spread out.
+        return reachable.stream()
+            .filter(point -> others.stream().noneMatch(other -> ThronesMap.distance(other.x, other.y, point[0], point[1])
+                < ThronesMap.distance(dead.x, dead.y, point[0], point[1])))
+            .min(nearest)
+            .orElseGet(() -> reachable.stream().min(nearest).orElse(null));
     }
 
     /** Moves as far along the straight line to the target as this turn's movement allows. */

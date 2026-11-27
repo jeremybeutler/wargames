@@ -14,8 +14,8 @@ import org.wargames.ThronesRules.HouseDef;
 import org.wargames.ThronesState.BattleLog;
 import org.wargames.ThronesState.Castle;
 import org.wargames.ThronesState.House;
-import org.wargames.ThronesState.Pact;
-import org.wargames.ThronesState.Proposal;
+import org.wargames.ThronesState.Coalition;
+import org.wargames.ThronesState.Invite;
 import org.wargames.ThronesState.Room;
 import org.wargames.model.TerrainRegion;
 
@@ -38,6 +38,11 @@ final class ThronesGame {
     private final ThronesMap map;
     private final Random random;
     IntSupplier d6;
+    /**
+     * Play the Dead's turns at once, inside the engine. Tests do; the server sets this false and
+     * plays them one paced turn at a time through BotScheduler, like any other bot.
+     */
+    boolean inlineAi = true;
     private final Map<Double, List<TerrainRegion>> snowCache = new HashMap<>();
 
     ThronesGame(ThronesMap map, Random random) {
@@ -76,6 +81,7 @@ final class ThronesGame {
     void join(Room room, String houseId, String playerName, String heir, String tokenHash) {
         if (!"lobby".equals(room.status)) throw new RuleException("This game has already started.");
         House house = house(room, houseId);
+        if (ThronesRules.isDead(house.id)) throw new RuleException("The Dead are played by the server.");
         if (house.claimed) throw new RuleException(house.name + " is already taken.");
         if (heir != null && !heir.isBlank()) {
             String choice = heir.trim();
@@ -92,10 +98,19 @@ final class ThronesGame {
 
     void start(Room room) {
         if (!"lobby".equals(room.status)) throw new RuleException("The game has already started.");
-        long players = room.houses.stream().filter(house -> house.claimed).count();
-        if (players < 3) throw new RuleException("At least 3 houses must be claimed to start.");
+        long players = room.houses.stream().filter(house -> house.claimed && !ThronesRules.isDead(house.id)).count();
+        if (players < ThronesRules.MIN_HOUSES) {
+            throw new RuleException("At least " + ThronesRules.MIN_HOUSES + " houses must be claimed (by players or bots) to start.");
+        }
+        // The Dead are always in the game: three armies the server plays.
+        for (House house : room.houses) {
+            if (!ThronesRules.isDead(house.id)) continue;
+            house.ai = true;
+            house.bot = "dead";
+            house.claimed = true;
+            house.playerName = "The server";
+        }
         House dead = house(room, ThronesRules.DEAD);
-        if (!dead.claimed && room.computerDead) dead.ai = true;
 
         for (House house : room.houses) {
             house.alive = house.claimed || house.ai;
@@ -136,7 +151,7 @@ final class ThronesGame {
         room.turnIndex = 0;
         room.events.add("Turn order: " + room.turnOrderIds.stream().map(id -> house(room, id).name)
             .collect(Collectors.joining(", ")) + ".");
-        if (dead.ai) room.events.add("Nobody claimed the Dead, so the server commands them. Winter is coming.");
+        room.events.add("Beyond the Wall, the Dead wait for Winter. Hold every castle in the realm to win, together or alone.");
         room.events.add("Round 1 begins. It is Summer.");
         beginTurn(room);
         runComputerTurns(room);
@@ -169,7 +184,7 @@ final class ThronesGame {
                 destination, land.segments(), wallFrom);
         }
         if (fateActive(room, "storm")) throw new RuleException("A storm on the Narrow Sea: no one can sail this round.");
-        if (ThronesRules.DEAD.equals(mover.id)) throw new RuleException("The Dead cannot cross water.");
+        if (ThronesRules.isDead(mover.id)) throw new RuleException("The Dead cannot cross water.");
         if ("greyjoy".equals(mover.id)) {
             if (!map.nearWater(mover.x, mover.y, 2.5) || !map.nearWater(x, y, 2.5)) {
                 throw new RuleException("The Iron Fleet sails from one coast to another: start and end near the sea.");
@@ -271,7 +286,7 @@ final class ThronesGame {
             throw new RuleException(house(room, castle.owner).name + " is your ally. Break the pact first.");
         }
         if (!enemies.isEmpty()) throw new RuleException("Defeat the army defending " + castle.name + " first.");
-        if (ThronesRules.DEAD.equals(attacker.id) && !winter(room)) {
+        if (ThronesRules.isDead(attacker.id) && !winter(room)) {
             throw new RuleException("The Dead cannot attack until Winter comes.");
         }
         spendAttack(attacker);
@@ -298,6 +313,11 @@ final class ThronesGame {
         Battle.Result result = Battle.roll(dice(room, attacker), attackModifier, defenseDice, defenseModifier, d6);
         reveal(room, attacker);
         reveal(room, defender);
+        if (ThronesRules.isDead(defender.id)) forge(room, attacker);
+        if (ThronesRules.isDead(attacker.id)) {
+            forge(room, defender);
+            helpers.forEach(helper -> forge(room, helper));
+        }
         House winner = result.attackerWon() ? attacker : defender;
         House loser = result.attackerWon() ? defender : attacker;
         BattleLog log = log(room, attacker, defender.id, defender.leader + " (" + defender.name + ")", result,
@@ -326,6 +346,7 @@ final class ThronesGame {
         Battle.Result result = Battle.roll(dice(room, attacker), attackModifier, Math.max(1, castle.units),
             defenseModifier, d6);
         reveal(room, attacker);
+        if (ThronesRules.isDead(castle.owner)) forge(room, attacker);
         BattleLog log = log(room, attacker, castle.id, castle.name, result, attackModifier, defenseModifier);
         String outcome;
         if (result.attackerWon()) {
@@ -334,11 +355,11 @@ final class ThronesGame {
                 castle.owner = attacker.id;
                 log.captured = true;
                 outcome = attacker.name + " captured " + castle.name + "!";
-                if (ThronesRules.WALL_CASTLES.contains(castle.name) && ThronesRules.DEAD.equals(attacker.id)) {
+                if (ThronesRules.WALL_CASTLES.contains(castle.name) && ThronesRules.isDead(attacker.id)) {
                     room.wallBreached = true;
                     outcome += " The Wall is breached.";
                 }
-                if (!ThronesRules.NEUTRAL.equals(previous)) {
+                if (!ThronesRules.NEUTRAL.equals(previous) && !ThronesRules.isDead(previous)) {
                     House loserHouse = house(room, previous);
                     if (loserHouse.alive && loserHouse.seat.equals(castle.name)) {
                         outcome += " " + loserHouse.name + " has lost its seat.";
@@ -406,8 +427,9 @@ final class ThronesGame {
     private int attackModifier(Room room, House attacker, String targetOwner, Castle castle) {
         int modifier = 0;
         if (attacker.screamers) modifier += 1;
-        if (targetOwner != null && targetOwner.equals(attacker.redWeddingTarget)) modifier += 2;
-        if ("baratheon".equals(attacker.id) && ThronesRules.DEAD.equals(targetOwner)) modifier += 1;
+        if (targetOwner != null && attacker.redWeddingTargets.contains(targetOwner)) modifier += 2;
+        if ("baratheon".equals(attacker.id) && ThronesRules.isDead(targetOwner)) modifier += 1;
+        if (sworn(room, attacker)) modifier += ThronesRules.SWORN_BONUS;
         if ("greyjoy".equals(attacker.id) && castle != null && (castle.port || map.nearWater(castle.x, castle.y, 2.0))) {
             modifier += 1;
         }
@@ -419,7 +441,8 @@ final class ThronesGame {
         String region = map.regionAt(defender.x, defender.y);
         if ("stark".equals(defender.id) && ThronesRules.NORTHERN_REGIONS.contains(region)) modifier += 1;
         if ("martell".equals(defender.id) && "Dorne".equals(region)) modifier += 1;
-        if ("baratheon".equals(defender.id) && ThronesRules.DEAD.equals(attacker.id)) modifier += 1;
+        if ("baratheon".equals(defender.id) && ThronesRules.isDead(attacker.id)) modifier += 1;
+        if (sworn(room, defender)) modifier += ThronesRules.SWORN_BONUS;
         if ("volcanic".equals(defender.terrain)) modifier -= 1;
         return modifier;
     }
@@ -431,7 +454,7 @@ final class ThronesGame {
     }
 
     private void armyOfTheDead(Room room, House winner) {
-        if (winner != null && winner.alive && ThronesRules.DEAD.equals(winner.id)) {
+        if (winner != null && winner.alive && ThronesRules.isDead(winner.id)) {
             winner.units += 1;
             room.events.add("The fallen rise: the Army of the Dead grows to " + winner.units + ".");
         }
@@ -452,13 +475,17 @@ final class ThronesGame {
     private void fall(Room room, House house, House killer) {
         if (!house.dragons.isEmpty()) {
             String dragon = house.dragons.remove(house.dragons.size() - 1);
-            if (killer != null && ThronesRules.DEAD.equals(killer.id)) {
+            if (killer != null && ThronesRules.isDead(killer.id)) {
                 room.iceDragon = true;
                 room.wallBreached = true;
                 room.events.add(dragon + " has fallen, and the Night King raises it as an ice dragon. The Wall cannot hold.");
             } else {
                 room.events.add(dragon + " has fallen defending " + house.leader + ".");
             }
+            return;
+        }
+        if (ThronesRules.isDead(house.id) && !ThronesRules.DEAD.equals(house.id)) {
+            eliminate(room, house, house.leader + " is destroyed.");
             return;
         }
         if (ThronesRules.DEAD.equals(house.id)) {
@@ -486,13 +513,12 @@ final class ThronesGame {
     }
 
     private void slayNightKing(Room room, House killer) {
-        House dead = house(room, ThronesRules.DEAD);
-        room.events.add(killer.leader + " has slain the Night King! The Army of the Dead crumbles.");
-        eliminate(room, dead, null);
-        if (greatSeats(room, killer.id) >= ThronesRules.SEATS_FOR_NIGHT_KING_SLAYER) {
-            declare(room, List.of(killer.id), killer.leader + " slew the Night King and rules "
-                + greatSeats(room, killer.id) + " great seats. " + killer.name + " wins!");
-            return;
+        room.events.add(killer.leader + " has slain the Night King! Every army of the Dead crumbles to dust.");
+        for (House host : room.houses) {
+            if (ThronesRules.isDead(host.id)) eliminate(room, host, null);
+        }
+        for (Castle castle : room.castles) {
+            if (ThronesRules.isDead(castle.owner)) castle.owner = ThronesRules.NEUTRAL;
         }
         killer.gold += 6;
         for (House house : room.houses) {
@@ -543,115 +569,41 @@ final class ThronesGame {
         for (Castle castle : room.castles) {
             if (castle.owner.equals(house.id)) castle.owner = ThronesRules.NEUTRAL;
         }
-        room.pacts.removeIf(pact -> pact.a.equals(house.id) || pact.b.equals(house.id));
-        room.proposals.removeIf(proposal -> proposal.from.equals(house.id) || proposal.to.equals(house.id));
+        for (Coalition coalition : new ArrayList<>(room.coalitions)) {
+            coalition.members.remove(house.id);
+            if (coalition.members.size() < 2) room.coalitions.remove(coalition);
+        }
+        room.invites.removeIf(invite -> invite.from.equals(house.id) || invite.to.equals(house.id));
         room.events.add((reason == null ? "" : reason + " ") + house.name + " is no more.");
     }
 
     // ------------------------------------------------------------------ gold and armies
 
     int recruitCost(Room room, House house) {
-        if (fateActive(room, "sellswords") || "tyrell".equals(house.id)) return 1;
+        if (fateActive(room, "levies") || "tyrell".equals(house.id)) return 1;
         return 2;
     }
 
     void recruit(Room room, House house, int count) {
         requireTurn(room, house);
-        if (ThronesRules.DEAD.equals(house.id)) throw new RuleException("The Dead raise no levies; they grow by winning.");
+        if (ThronesRules.isDead(house.id)) throw new RuleException("The Dead raise no levies; they grow by winning.");
         if (count < 1) throw new RuleException("Raise at least one unit.");
-        Castle castle = heldCastleHere(room, house, "Raise levies at a castle you hold.");
+        Castle castle = castleAt(room, house.x, house.y);
+        if (castle == null || !castle.owner.equals(house.id)) throw new RuleException("Raise troops at a castle you hold.");
         if (house.recruitedThisTurn + count > ThronesRules.MAX_RECRUITS_PER_TURN) {
             throw new RuleException("You can raise at most " + ThronesRules.MAX_RECRUITS_PER_TURN + " units a turn.");
         }
         int cost = recruitCost(room, house) * count;
-        pay(house, cost);
+        if (house.gold < cost) throw new RuleException("That costs " + cost + " gold; you have " + house.gold + ".");
+        house.gold -= cost;
         house.units += count;
         house.recruitedThisTurn += count;
         room.events.add(String.format(Locale.ROOT, "%s raised %d unit%s at %s for %d gold.", house.name, count,
             count == 1 ? "" : "s", castle.name, cost));
     }
 
-    void fortify(Room room, House house) {
-        requireTurn(room, house);
-        Castle castle = heldCastleHere(room, house, "Fortify a castle you hold by standing in it.");
-        if (house.fortifiedThisTurn) throw new RuleException("You have already fortified this turn.");
-        pay(house, ThronesRules.FORTIFY_COST);
-        castle.units += 1;
-        house.fortifiedThisTurn = true;
-        room.events.add(house.name + " strengthened " + castle.name + "'s garrison to " + castle.units + ".");
-    }
-
-    void hireSellswords(Room room, House house) {
-        requireTurn(room, house);
-        Castle castle = freeCityHere(room, house);
-        if (house.hiredThisTurn) throw new RuleException("You have already hired sellswords this turn.");
-        if (ThronesRules.DEAD.equals(house.id)) throw new RuleException("No sellsword will march for the Dead.");
-        pay(house, ThronesRules.SELLSWORD_COST);
-        house.units += ThronesRules.SELLSWORD_UNITS;
-        house.hiredThisTurn = true;
-        room.events.add(house.name + " hired the Golden Company in " + castle.name + ".");
-    }
-
-    void takeLoan(Room room, House house) {
-        requireTurn(room, house);
-        Castle castle = freeCityHere(room, house);
-        if (!ThronesRules.BRAAVOS.equals(castle.name)) throw new RuleException("The Iron Bank lends only in Braavos.");
-        if (house.loanDue > 0) throw new RuleException("Repay your loan before asking the Iron Bank for another.");
-        house.gold += ThronesRules.LOAN;
-        house.loanDue = room.round + ThronesRules.LOAN_ROUNDS;
-        room.events.add(house.name + " borrowed " + ThronesRules.LOAN + " gold from the Iron Bank, to repay "
-            + ThronesRules.LOAN_REPAYMENT + " by the end of round " + house.loanDue + ".");
-    }
-
-    void repayLoan(Room room, House house) {
-        requireTurn(room, house);
-        if (house.loanDue == 0) throw new RuleException("You owe the Iron Bank nothing.");
-        pay(house, ThronesRules.LOAN_REPAYMENT);
-        house.loanDue = 0;
-        room.events.add(house.name + " repaid the Iron Bank. The Iron Bank will have its due.");
-    }
-
-    void bribe(Room room, House house) {
-        requireTurn(room, house);
-        if (!"lannister".equals(house.id)) throw new RuleException("Only House Lannister buys castles.");
-        Castle castle = castleAt(room, house.x, house.y);
-        if (castle == null || !ThronesRules.NEUTRAL.equals(castle.owner)) {
-            throw new RuleException("Stand at a neutral castle to buy its garrison.");
-        }
-        int cost = bribeCost(castle);
-        pay(house, cost);
-        castle.owner = house.id;
-        room.events.add("A Lannister always pays his debts: " + castle.name + " opened its gates for " + cost + " gold.");
-    }
-
-    static int bribeCost(Castle castle) {
-        return Math.max(2, 2 * castle.units);
-    }
-
-    private static void pay(House house, int cost) {
-        if (house.gold < cost) throw new RuleException("That costs " + cost + " gold; you have " + house.gold + ".");
-        house.gold -= cost;
-    }
-
-    private Castle heldCastleHere(Room room, House house, String message) {
-        Castle castle = castleAt(room, house.x, house.y);
-        if (castle == null || !castle.owner.equals(house.id)) throw new RuleException(message);
-        return castle;
-    }
-
-    private Castle freeCityHere(Room room, House house) {
-        Castle castle = castleAt(room, house.x, house.y);
-        if (castle == null || !(ThronesRules.BRAAVOS.equals(castle.name) || ThronesRules.PENTOS.equals(castle.name))) {
-            throw new RuleException("Sellswords and loans are found in Braavos and Pentos.");
-        }
-        if (!ThronesRules.NEUTRAL.equals(castle.owner) && !friendly(room, house.id, castle.owner)) {
-            throw new RuleException(house(room, castle.owner).name + " holds " + castle.name + " and will not let you hire there.");
-        }
-        return castle;
-    }
-
     int income(Room room, House house) {
-        if (ThronesRules.DEAD.equals(house.id)) return 0;
+        if (ThronesRules.isDead(house.id)) return 0;
         if (house.oathbreakerUntil >= room.round || fateActive(room, "blight")) return 0;
         int income = "lannister".equals(house.id) ? 2 : 0;
         for (Castle castle : room.castles) {
@@ -663,74 +615,144 @@ final class ThronesGame {
         return income;
     }
 
-    // ------------------------------------------------------------------ pacts
+    // ------------------------------------------------------------------ coalitions
 
-    void propose(Room room, House from, String toId, boolean royal) {
+    static Coalition coalitionOf(Room room, String houseId) {
+        return room.coalitions.stream().filter(coalition -> coalition.members.contains(houseId)).findFirst().orElse(null);
+    }
+
+    /** This house and its living coalition partners: the side that wins or loses together. */
+    List<House> side(Room room, House house) {
+        Coalition coalition = coalitionOf(room, house.id);
+        if (coalition == null) return List.of(house);
+        return coalition.members.stream().map(id -> house(room, id)).filter(member -> member.alive).toList();
+    }
+
+    /** Invite another house to join forces; it answers when it likes (bots answer at once). */
+    void invite(Room room, House from, String toId, boolean royal) {
         House to = house(room, toId);
         if (from.id.equals(to.id)) throw new RuleException("Choose another house.");
-        if (!to.alive || to.ai) throw new RuleException(to.name + " cannot make pacts.");
-        if (ThronesRules.DEAD.equals(from.id) || ThronesRules.DEAD.equals(to.id)) {
-            throw new RuleException("No pact can be made with the Dead.");
+        if (ThronesRules.isDead(from.id) || ThronesRules.isDead(to.id)) throw new RuleException("No one joins forces with the Dead.");
+        if (!from.alive) throw new RuleException(from.name + " is no more.");
+        if (!to.alive) throw new RuleException(to.name + " is no more.");
+        if (allied(room, from.id, to.id)) throw new RuleException("You are already sworn to " + to.name + ".");
+        if (from.oathbreakerUntil >= room.round) {
+            throw new RuleException("No one trusts an oathbreaker yet. You can make new allies after round " + from.oathbreakerUntil + ".");
         }
-        if (allied(room, from.id, to.id)) throw new RuleException("You already have a pact with " + to.name + ".");
-        if (from.oathbreakerUntil >= room.round) throw new RuleException("No one trusts an oathbreaker yet.");
-        if (to.oathbreakerUntil >= room.round) throw new RuleException(to.name + " broke a pact; no one may ally with them yet.");
-        if (room.proposals.stream().anyMatch(p -> p.from.equals(from.id) && p.to.equals(to.id))) {
-            throw new RuleException("You have already offered " + to.name + " a pact.");
+        if (to.oathbreakerUntil >= room.round) {
+            throw new RuleException(to.name + " broke its oath; no one may join it before round " + (to.oathbreakerUntil + 1) + ".");
+        }
+        if (room.invites.stream().anyMatch(invite -> invite.from.equals(from.id) && invite.to.equals(to.id))) {
+            throw new RuleException("You have already invited " + to.name + ".");
         }
         if (royal) {
             if (!"tyrell".equals(from.id)) throw new RuleException("Only House Tyrell arranges Royal Weddings.");
             if (from.powerUsed) throw new RuleException("House Tyrell has already used its power.");
             from.powerUsed = true;
         }
-        room.proposals.add(new Proposal(from.id, to.id, royal));
-        room.events.add(from.name + " offered " + to.name + (royal ? " a Royal Wedding." : " a pact."));
+        room.invites.add(new Invite(from.id, to.id, royal));
+        room.events.add(from.name + " invited " + to.name + (royal ? " to a Royal Wedding." : " to join forces."));
+        if (to.bot != null) respond(room, to, from.id, ThronesBot.acceptsInvitation(this, room, to, from, random));
     }
 
     void respond(Room room, House to, String fromId, boolean accept) {
-        Proposal proposal = room.proposals.stream().filter(p -> p.from.equals(fromId) && p.to.equals(to.id)).findFirst()
-            .orElseThrow(() -> new RuleException("There is no such offer."));
-        room.proposals.remove(proposal);
+        Invite invite = room.invites.stream().filter(item -> item.from.equals(fromId) && item.to.equals(to.id)).findFirst()
+            .orElseThrow(() -> new RuleException("There is no such invitation."));
+        room.invites.remove(invite);
         House from = house(room, fromId);
         if (!accept) {
-            if (proposal.royal) from.powerUsed = false;
-            room.events.add(to.name + " refused " + from.name + "'s offer.");
+            if (invite.royal) from.powerUsed = false;
+            room.events.add(to.name + " refused " + from.name + "'s invitation.");
             return;
         }
         if (!from.alive) throw new RuleException(from.name + " is no more.");
-        int locked = proposal.royal ? room.round + ThronesRules.ROYAL_WEDDING_ROUNDS : 0;
-        room.pacts.add(new Pact(from.id, to.id, room.round, locked));
-        room.proposals.removeIf(p -> (p.from.equals(to.id) && p.to.equals(from.id)));
-        if (proposal.royal) {
+        if (to.oathbreakerUntil >= room.round) throw new RuleException("No one trusts an oathbreaker yet.");
+        joinForces(room, from, to);
+        room.invites.removeIf(item -> allied(room, item.from, item.to));
+        String members = side(room, to).stream().map(member -> member.name).collect(Collectors.joining(", "));
+        if (invite.royal) {
+            int until = room.round + ThronesRules.ROYAL_WEDDING_ROUNDS;
+            from.lockedUntil = Math.max(from.lockedUntil, until);
+            to.lockedUntil = Math.max(to.lockedUntil, until);
             to.units += 2;
-            room.events.add("A Royal Wedding! " + from.name + " and " + to.name + " are bound until round " + locked
-                + ", and " + to.name + " gains 2 units.");
+            room.events.add("A Royal Wedding! " + from.name + " and " + to.name + " are bound until round " + until
+                + ", and " + to.name + " gains 2 units. The coalition: " + members + ".");
         } else {
-            room.events.add(from.name + " and " + to.name + " made a pact.");
+            room.events.add(to.name + " joined forces with " + from.name + ". The coalition: " + members + ".");
         }
     }
 
-    void breakPact(Room room, House house, String otherId) {
+    private void joinForces(Room room, House a, House b) {
+        Coalition first = coalitionOf(room, a.id);
+        Coalition second = coalitionOf(room, b.id);
+        if (first == null && second == null) {
+            Coalition coalition = new Coalition("c" + (++room.coalitionCount), room.round);
+            coalition.members.add(a.id);
+            coalition.members.add(b.id);
+            room.coalitions.add(coalition);
+        } else if (first == null) {
+            second.members.add(a.id);
+        } else if (second == null) {
+            first.members.add(b.id);
+        } else if (first != second) {
+            first.members.addAll(second.members);
+            room.coalitions.remove(second);
+        }
+    }
+
+    /** Leave your coalition on your turn. Attack a former ally this turn for a Red Wedding. */
+    void leave(Room room, House house) {
         requireTurn(room, house);
-        Pact pact = room.pacts.stream().filter(p -> p.joins(house.id, otherId)).findFirst()
-            .orElseThrow(() -> new RuleException("You have no pact with that house."));
-        if (pact.lockedUntil >= room.round) {
-            throw new RuleException("A Royal Wedding binds you until round " + pact.lockedUntil + ".");
+        Coalition coalition = coalitionOf(room, house.id);
+        if (coalition == null) throw new RuleException("You are not part of a coalition.");
+        if (house.lockedUntil >= room.round) {
+            throw new RuleException("A Royal Wedding binds you until after round " + house.lockedUntil + ".");
         }
-        room.pacts.remove(pact);
-        House other = house(room, otherId);
-        house.redWeddingTarget = other.id;
+        coalition.members.remove(house.id);
+        house.redWeddingTargets = new ArrayList<>(coalition.members);
         house.oathbreakerUntil = room.round + ThronesRules.OATHBREAKER_ROUNDS;
-        room.events.add(house.name + " broke its pact with " + other.name + ". The North remembers; so will everyone.");
+        house.forged = false;
+        if (coalition.members.size() < 2) room.coalitions.remove(coalition);
+        room.invites.removeIf(invite -> invite.from.equals(house.id) || invite.to.equals(house.id));
+        room.events.add(house.name + " broke its oath and left its coalition. No one will join it before round "
+            + (house.oathbreakerUntil + 1) + ".");
     }
 
+    /** Coalition partners, and the Dead's armies with each other. */
     boolean allied(Room room, String a, String b) {
-        return a != null && b != null && room.pacts.stream().anyMatch(pact -> pact.joins(a, b));
+        if (a == null || b == null || a.equals(b)) return false;
+        if (ThronesRules.isDead(a) && ThronesRules.isDead(b)) return true;
+        Coalition coalition = coalitionOf(room, a);
+        return coalition != null && coalition.members.contains(b);
     }
 
     /** The same house, or an ally. */
     boolean friendly(Room room, String house, String owner) {
         return house.equals(owner) || allied(room, house, owner);
+    }
+
+    /**
+     * Sworn bonds: a house forged in winter (it fought the Dead during the Long Night while in a
+     * coalition) gets +1 on every die while another forged house stands in its coalition.
+     */
+    boolean sworn(Room room, House house) {
+        if (!house.forged) return false;
+        Coalition coalition = coalitionOf(room, house.id);
+        return coalition != null && coalition.members.stream()
+            .anyMatch(id -> !id.equals(house.id) && livingHouse(room, id) != null && house(room, id).forged);
+    }
+
+    private void forge(Room room, House house) {
+        if (house == null || house.forged || !house.alive || !winter(room) || ThronesRules.isDead(house.id)) return;
+        if (coalitionOf(room, house.id) == null) return;
+        house.forged = true;
+        if (sworn(room, house)) {
+            String names = side(room, house).stream().filter(member -> member.forged).map(member -> member.name)
+                .collect(Collectors.joining(" and "));
+            room.events.add("Forged in winter: " + names + " fight as one. +1 on every die for the rest of the game.");
+        } else {
+            room.events.add(house.name + " fought the Dead. When a coalition partner does too, their bond is forged in winter.");
+        }
     }
 
     // ------------------------------------------------------------------ powers
@@ -762,7 +784,7 @@ final class ThronesGame {
             }
             case "baratheon" -> {
                 House victim = house(room, target);
-                if (!victim.alive || victim.id.equals(house.id) || ThronesRules.DEAD.equals(victim.id)) {
+                if (!victim.alive || victim.id.equals(house.id) || ThronesRules.isDead(victim.id)) {
                     throw new RuleException("Choose a living rival house.");
                 }
                 if (victim.heirIndex >= victim.heirs.size() - 1) {
@@ -780,10 +802,10 @@ final class ThronesGame {
                 castle.owner = house.id;
                 room.events.add("What is dead may never die! The ironborn reaved " + castle.name + ".");
             }
-            case "tyrell" -> throw new RuleException("Offer a Royal Wedding from the pacts panel.");
+            case "tyrell" -> throw new RuleException("Offer a Royal Wedding from the Houses panel.");
             case "martell" -> {
                 House rival = house(room, target);
-                if (!rival.alive || rival.id.equals(house.id) || ThronesRules.DEAD.equals(rival.id)
+                if (!rival.alive || rival.id.equals(house.id) || ThronesRules.isDead(rival.id)
                     || !same(house.x, house.y, rival.x, rival.y)) {
                     throw new RuleException("Challenge a leader whose army stands with yours.");
                 }
@@ -800,7 +822,7 @@ final class ThronesGame {
                 succession(room, loser, true);
                 return;
             }
-            case ThronesRules.DEAD -> {
+            case ThronesRules.DEAD, "deadfrost", "deadhard" -> {
                 if (!winter(room)) throw new RuleException("The Long Night falls only in Winter.");
                 if (house.moved) throw new RuleException("Call the Long Night before you move.");
                 house.movementRemaining = house.movementMax * 2;
@@ -851,7 +873,7 @@ final class ThronesGame {
     }
 
     private void runComputerTurns(Room room) {
-        for (int guard = 0; guard < 4 && room.winners.isEmpty() && "campaign".equals(room.status); guard++) {
+        for (int guard = 0; guard < 8 && inlineAi && room.winners.isEmpty() && "campaign".equals(room.status); guard++) {
             House active = current(room);
             if (!active.ai) return;
             new ThronesDeadAi(this, map).play(room, active);
@@ -878,10 +900,8 @@ final class ThronesGame {
         house.attacksLeft = 1;
         house.movementRemaining = house.movementMax;
         house.recruitedThisTurn = 0;
-        house.fortifiedThisTurn = false;
-        house.hiredThisTurn = false;
         house.screamers = false;
-        house.redWeddingTarget = null;
+        house.redWeddingTargets = new ArrayList<>();
         int income = income(room, house);
         if (income > 0) {
             house.gold += income;
@@ -901,14 +921,13 @@ final class ThronesGame {
         }
         start.append("It is ").append(season(room)).append('.');
         room.events.add(start.toString());
-        if (winter(room) && !wasWinter) room.events.add("Winter has come. The Dead may now attack the Wall.");
-        House dead = room.houses.stream().filter(house -> ThronesRules.DEAD.equals(house.id) && house.alive)
-            .findFirst().orElse(null);
-        if (dead != null && winter(room)) dead.units += 1;
-        if (room.round >= ThronesRules.DRAGON_HATCH_ROUND) hatchDragons(room);
-        for (House house : room.houses) {
-            if (house.alive && house.loanDue > 0 && house.loanDue < room.round) defaultOnLoan(room, house);
+        if (winter(room) && !wasWinter) longNight(room);
+        if (winter(room)) {
+            for (House host : room.houses) {
+                if (host.alive && ThronesRules.isDead(host.id)) host.units += 1;
+            }
         }
+        if (room.round >= ThronesRules.DRAGON_HATCH_ROUND) hatchDragons(room);
         if (room.round >= 2) drawFate(room);
         for (House house : room.houses) {
             if (house.alive && house.visibleUntilRound < room.round) house.hidden = concealedIn(house.terrain);
@@ -926,16 +945,17 @@ final class ThronesGame {
             + targaryen.leader + " can now fly.");
     }
 
-    private void defaultOnLoan(Room room, House house) {
-        house.loanDue = 0;
-        Castle seat = castleNamed(room, house.seat);
-        if (seat != null && seat.owner.equals(house.id)) seat.units = Math.max(0, seat.units - 3);
-        if (house.units > 0) house.units -= 1;
-        room.events.add("The Iron Bank will have its due. Sellswords paid by the Bank sack " + house.seat
-            + "; " + house.name + " loses 3 garrison and 1 unit.");
+    /** Winter has come: the Long Night falls on every house at once. */
+    private void longNight(Room room) {
+        if (room.longNight) return;
+        room.longNight = true;
+        room.events.add("The Long Night falls. Winter has come, and the Dead march on the Wall. "
+            + "Houses that fight them side by side are forged in winter.");
     }
 
     void drawFate(Room room) {
+        // Games saved before the deck changed may hold cards that no longer exist; skip them.
+        room.fateDeck.removeIf(id -> ThronesRules.fate(id) == null);
         if (room.fateDeck.isEmpty()) room.fateDeck = shuffledDeck();
         String card = room.fateDeck.remove(0);
         room.fate = card;
@@ -954,7 +974,10 @@ final class ThronesGame {
                     if (dead != null) dead.units += 2;
                 } else {
                     room.winterRound = Math.max(room.round, room.winterRound - 1);
-                    if (winter(room)) room.events.add("Winter has come early.");
+                    if (winter(room)) {
+                        room.events.add("Winter has come early.");
+                        longNight(room);
+                    }
                 }
             }
             case "harvest" -> room.houses.stream().filter(house -> house.alive && !house.ai).forEach(house -> house.gold += 2);
@@ -964,7 +987,7 @@ final class ThronesGame {
             }
             case "wildlings" -> {
                 Castle wall = castleNamed(room, ThronesRules.CASTLE_BLACK);
-                if (wall != null && !ThronesRules.DEAD.equals(wall.owner)) wall.units = Math.max(0, wall.units - 1);
+                if (wall != null && !ThronesRules.isDead(wall.owner)) wall.units = Math.max(0, wall.units - 1);
             }
             case "tourney" -> {
                 Castle city = castleNamed(room, ThronesRules.KINGS_LANDING);
@@ -973,13 +996,6 @@ final class ThronesGame {
             }
             case "desertion" -> room.houses.stream().filter(house -> house.alive && house.units >= 4)
                 .forEach(house -> house.units -= 1);
-            case "ironbank" -> room.houses.stream().filter(house -> house.alive && house.gold > 0)
-                .max(Comparator.comparingInt(house -> house.gold))
-                .ifPresent(house -> {
-                    int paid = Math.min(3, house.gold);
-                    house.gold -= paid;
-                    room.events.add(house.name + " paid the Iron Bank " + paid + " gold.");
-                });
             case "comet" -> {
                 if (!room.dragonsHatched) hatchDragons(room);
                 else {
@@ -1000,7 +1016,7 @@ final class ThronesGame {
                 House holder = rock == null ? null : livingHouse(room, rock.owner);
                 if (holder != null) holder.gold += 3;
             }
-            default -> { /* blight, storm, sellswords: checked while the round lasts */ }
+            default -> { /* blight, storm, levies: checked while the round lasts */ }
         }
     }
 
@@ -1018,68 +1034,51 @@ final class ThronesGame {
     // ------------------------------------------------------------------ victory
 
     void endRound(Room room) {
-        House dead = livingHouse(room, ThronesRules.DEAD);
-        Castle city = castleNamed(room, ThronesRules.KINGS_LANDING);
-        if (dead != null) {
-            long held = room.castles.stream().filter(castle -> castle.owner.equals(dead.id)
-                && map.southOfWall(castle.x, castle.y)).count();
-            if ((city != null && dead.id.equals(city.owner)) || held >= ThronesRules.DEAD_CASTLES_TO_WIN) {
-                declare(room, List.of(dead.id), dead.ai
-                    ? "The Long Night has fallen. The Dead have won, and every house has lost."
-                    : "The Long Night has fallen. The Dead win!");
-                return;
-            }
-        }
-        String holder = city == null ? ThronesRules.NEUTRAL : city.owner;
-        if (ThronesRules.NEUTRAL.equals(holder) || ThronesRules.DEAD.equals(holder)) {
-            room.crownHolder = null;
-            room.crownStreak = 0;
-        } else if (holder.equals(room.crownHolder)) {
-            room.crownStreak += 1;
-        } else {
-            room.crownHolder = holder;
-            room.crownStreak = 1;
-            room.crownSince = room.round;
-        }
-        if (room.crownHolder != null && room.crownStreak >= ThronesRules.CROWN_ROUNDS_TO_WIN) {
-            House king = house(room, room.crownHolder);
-            List<String> winners = new ArrayList<>(List.of(king.id));
-            room.pacts.stream().filter(pact -> (pact.a.equals(king.id) || pact.b.equals(king.id))
-                    && pact.sinceRound <= room.crownSince)
-                .map(pact -> pact.other(king.id)).forEach(winners::add);
-            String hands = winners.size() > 1 ? " with " + winners.subList(1, winners.size()).stream()
-                .map(id -> house(room, id).name).collect(Collectors.joining(" and ")) + " as Hand of the King" : "";
-            declare(room, winners, king.leader + " sits the Iron Throne" + hands + ". " + king.name + " wins!");
+        checkVictory(room, true);
+    }
+
+    void checkLastStanding(Room room) {
+        checkVictory(room, false);
+    }
+
+    /**
+     * The ways a game ends. A side (a coalition, or a house alone) wins by holding every castle at
+     * the end of a round, or at once when every other house and the Dead are destroyed. The Dead win
+     * if every living house falls, or if they hold every castle at the end of a round.
+     */
+    void checkVictory(Room room, boolean endOfRound) {
+        if (!room.winners.isEmpty() || !"campaign".equals(room.status)) return;
+        List<House> living = room.houses.stream().filter(house -> house.alive && !ThronesRules.isDead(house.id)).toList();
+        List<String> deadIds = room.houses.stream().filter(house -> ThronesRules.isDead(house.id)).map(house -> house.id).toList();
+        boolean deadAlive = room.houses.stream().anyMatch(house -> house.alive && ThronesRules.isDead(house.id));
+        if (living.isEmpty()) {
+            declare(room, deadIds, "Every house has fallen. The Long Night will never end: the Dead win.");
             return;
         }
-        for (House house : room.houses) {
-            if (house.alive && !ThronesRules.DEAD.equals(house.id) && greatSeats(room, house.id) >= ThronesRules.GREAT_SEATS_TO_WIN) {
-                declare(room, List.of(house.id), house.name + " holds " + greatSeats(room, house.id)
-                    + " great seats and rules the Seven Kingdoms!");
+        if (endOfRound && !room.castles.isEmpty() && room.castles.stream().allMatch(castle -> ThronesRules.isDead(castle.owner))) {
+            declare(room, deadIds, "The Dead hold every castle in the realm. The Long Night will never end.");
+            return;
+        }
+        for (House house : living) {
+            List<House> side = side(room, house);
+            List<String> ids = side.stream().map(member -> member.id).toList();
+            String names = side.stream().map(member -> member.name).collect(Collectors.joining(" and "));
+            boolean together = side.size() > 1;
+            if (endOfRound && room.castles.stream().allMatch(castle -> ids.contains(castle.owner))) {
+                declare(room, ids, names + (together ? " hold" : " holds") + " every castle in the realm and "
+                    + (together ? "win together!" : "wins!"));
                 return;
             }
-        }
-        if (room.round >= room.roundLimit) {
-            House best = room.houses.stream().filter(house -> house.alive && !house.ai)
-                .max(Comparator.<House>comparingLong(house -> greatSeats(room, house.id))
-                    .thenComparingLong(house -> room.castles.stream().filter(c -> c.owner.equals(house.id)).count())
-                    .thenComparingInt(house -> house.gold))
-                .orElse(null);
-            if (best != null) {
-                declare(room, List.of(best.id), "The last round is over. " + best.name + " holds the most great seats ("
-                    + greatSeats(room, best.id) + ") and wins!");
+            if (!deadAlive && living.stream().allMatch(other -> ids.contains(other.id))) {
+                declare(room, ids, names + (together ? " are" : " is") + " the last standing and "
+                    + (together ? "win together!" : "wins!"));
+                return;
             }
         }
     }
 
-    void checkLastStanding(Room room) {
-        if (!room.winners.isEmpty() || !"campaign".equals(room.status)) return;
-        List<House> players = room.houses.stream().filter(house -> house.alive && !house.ai).toList();
-        if (players.size() == 1) {
-            declare(room, List.of(players.get(0).id), players.get(0).name + " is the last house standing and wins!");
-        } else if (players.isEmpty()) {
-            declare(room, List.of(ThronesRules.DEAD), "Every house has fallen. The Long Night has come.");
-        }
+    long castlesHeld(Room room, List<House> side) {
+        return room.castles.stream().filter(castle -> side.stream().anyMatch(member -> member.id.equals(castle.owner))).count();
     }
 
     private void declare(Room room, List<String> winners, String text) {
@@ -1200,7 +1199,7 @@ final class ThronesGame {
 
     private static Map<String, Double> rateOverrides(House mover) {
         return switch (mover.id) {
-            case "stark", ThronesRules.DEAD -> Map.of("snow", 15.0);
+            case "stark", ThronesRules.DEAD, "deadfrost", "deadhard" -> Map.of("snow", 15.0);
             case "martell" -> Map.of("desert", 15.0);
             default -> Map.of();
         };

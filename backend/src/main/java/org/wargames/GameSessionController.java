@@ -24,7 +24,9 @@ import org.wargames.repository.GameSessionRepository;
 import org.wargames.repository.PlaceRepository;
 import org.wargames.repository.TerrainRegionRepository;
 import org.springframework.http.HttpStatus;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -80,16 +82,21 @@ public class GameSessionController {
     private final TerrainRegionRepository terrainRegions;
     private final ObjectMapper objectMapper;
     private final ChatService chat;
+    private final BotScheduler bots;
+    private final TransactionTemplate transactions;
 
     public GameSessionController(GameSessionRepository games, CampaignRepository campaigns,
                                  PlaceRepository places, TerrainRegionRepository terrainRegions,
-                                 ObjectMapper objectMapper, ChatService chat) {
+                                 ObjectMapper objectMapper, ChatService chat, BotScheduler bots,
+                                 PlatformTransactionManager transactionManager) {
         this.games = games;
         this.campaigns = campaigns;
         this.places = places;
         this.terrainRegions = terrainRegions;
         this.objectMapper = objectMapper;
         this.chat = chat;
+        this.bots = bots;
+        this.transactions = new TransactionTemplate(transactionManager);
     }
 
     @PostMapping
@@ -148,6 +155,7 @@ public class GameSessionController {
         if (seat == null && !"lobby".equals(room.status)) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "A seat on this device is required.");
         }
+        scheduleBots(room);
         return view(room, seat);
     }
 
@@ -187,7 +195,7 @@ public class GameSessionController {
         Room room = loadRoom(code);
         if (!"lobby".equals(room.status)) throw conflict("This campaign has already started.");
         Party party = party(room, request.characterId());
-        if (party.playerTokenHash != null) throw conflict("That character's seat is already taken.");
+        if (seatTaken(party)) throw conflict("That character's seat is already taken.");
         String playerName = cleanName(request.playerName());
         chooseRepresentative(party, request.representative());
         party.playerName = playerName;
@@ -199,6 +207,64 @@ public class GameSessionController {
         return view(room, party.id);
     }
 
+    /**
+     * Host only, in the lobby: a bot takes a seat ({@code characterId}), or every open seat when
+     * none is named. {@code difficulty} is "easy" or "hard".
+     */
+    @PostMapping("/{code}/bots")
+    @Transactional
+    public GameView addBots(@PathVariable String code, HttpServletRequest http, @RequestBody BotRequest request) {
+        Room room = loadRoom(code);
+        String seat = authenticate(room, http);
+        if (!SeatSessions.HOST_SEAT.equals(seat)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Only the host can add bots.");
+        }
+        if (!"lobby".equals(room.status)) throw conflict("Bots can only join before the campaign starts.");
+        String level = botLevel(request.difficulty());
+        List<Party> targets = request.characterId() == null || request.characterId().isBlank()
+            ? room.parties.stream().filter(party -> !seatTaken(party)).toList()
+            : List.of(party(room, request.characterId()));
+        if (targets.isEmpty()) throw conflict("Every seat is already taken.");
+        for (Party party : targets) {
+            if (seatTaken(party)) throw conflict(party.name + "'s seat is already taken.");
+            if (targets.size() == 1) chooseRepresentative(party, request.representative());
+            party.bot = level;
+            party.playerName = WarBot.HARD.equals(level) ? "Bot (hard)" : "Bot (easy)";
+            room.events.add((WarBot.EASY.equals(level) ? "An easy" : "A hard") + " bot joined as " + party.name + ".");
+        }
+        save(room);
+        return view(room, seat);
+    }
+
+    /** Host only, in the lobby: frees a bot's seat for a player. */
+    @DeleteMapping("/{code}/bots/{characterId}")
+    @Transactional
+    public GameView removeBot(@PathVariable String code, @PathVariable String characterId, HttpServletRequest http) {
+        Room room = loadRoom(code);
+        String seat = authenticate(room, http);
+        if (!SeatSessions.HOST_SEAT.equals(seat)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Only the host can remove bots.");
+        }
+        if (!"lobby".equals(room.status)) throw conflict("Bots can only leave before the campaign starts.");
+        Party party = party(room, characterId);
+        if (party.bot == null) throw conflict(party.name + " is not a bot.");
+        party.bot = null;
+        party.playerName = null;
+        room.events.add(party.name + "'s bot left; the seat is open.");
+        save(room);
+        return view(room, seat);
+    }
+
+    static boolean seatTaken(Party party) {
+        return party.playerTokenHash != null || party.bot != null;
+    }
+
+    private static String botLevel(String difficulty) {
+        if (difficulty == null || WarBot.EASY.equalsIgnoreCase(difficulty)) return WarBot.EASY;
+        if (WarBot.HARD.equalsIgnoreCase(difficulty)) return WarBot.HARD;
+        throw badRequest("Bot difficulty must be easy or hard.");
+    }
+
     @PostMapping("/{code}/start")
     @Transactional
     public GameView startGame(@PathVariable String code, HttpServletRequest http) {
@@ -206,7 +272,7 @@ public class GameSessionController {
         String seat = authenticate(room, http);
         requireHost(seat);
         if (!"lobby".equals(room.status)) throw conflict("The campaign has already started.");
-        if (room.parties.stream().anyMatch(party -> party.playerTokenHash == null)) {
+        if (room.parties.stream().anyMatch(party -> !seatTaken(party))) {
             throw conflict("Every character seat must be filled before starting.");
         }
         room.status = "campaign";
@@ -249,10 +315,17 @@ public class GameSessionController {
         Room room = requireActiveGame(code);
         String seat = authenticate(room, http);
         Party mover = activeParty(room, seat, request.characterId());
+        validateDestination(request.x(), request.y());
+        applyMove(room, mover, request.x(), request.y());
+        save(room);
+        return view(room, seat);
+    }
+
+    /** Moves the active party (a player's or a bot's), checking the rules. */
+    private void applyMove(Room room, Party mover, double x, double y) {
         if (mover.moved) throw conflict("This party has already moved this turn.");
         if (mover.attacked) throw conflict("A party cannot move after attacking.");
-        validateDestination(request.x(), request.y());
-        double[] target = snapToMountDoom(room, request.x(), request.y());
+        double[] target = snapToMountDoom(room, x, y);
         MovementPathCalculator.Result movement = calculateMove(room, mover, target[0], target[1]);
         if (movement.movementPoints() > mover.movementRemaining + 0.0001) {
             throw conflict(String.format(Locale.ROOT,
@@ -283,8 +356,6 @@ public class GameSessionController {
                     + (movement.riverCrossings() == 1 ? " river crossing" : " river crossings")));
         }
         advanceIfNoActions(room);
-        save(room);
-        return view(room, seat);
     }
 
     @PostMapping("/{code}/attack")
@@ -294,34 +365,98 @@ public class GameSessionController {
         Room room = requireActiveGame(code);
         String seat = authenticate(room, http);
         Party attacker = activeParty(room, seat, request.characterId());
+        applyAttack(room, attacker, request.targetId());
+        save(room);
+        return view(room, seat);
+    }
+
+    /** The active party (a player's or a bot's) attacks a party or stronghold it stands on. */
+    static void applyAttack(Room room, Party attacker, String targetId) {
         if (attacker.attacked) throw conflict("This party has already attacked this turn.");
         Party defender = room.parties.stream()
             .filter(party -> party.alive && !party.team.equals(attacker.team)
                 && sameLocation(attacker.x, attacker.y, party.x, party.y))
             .findFirst().orElse(null);
         if (defender != null) {
-            if (!defender.id.equals(request.targetId())) {
+            if (!defender.id.equals(targetId)) {
                 throw conflict("Defeat the defending party before attacking a stronghold.");
             }
             attacker.attacked = true;
             fight(room, attacker, defender, GameSessionController::rollDie);
             finishAction(room);
-            save(room);
-            return view(room, seat);
+            return;
         }
 
         Objective objective = room.objectives.stream()
             .filter(city -> sameLocation(attacker.x, attacker.y, city.x, city.y))
             .findFirst().orElse(null);
-        if (objective == null || !objective.id.equals(request.targetId())) {
+        if (objective == null || !objective.id.equals(targetId)) {
             throw conflict("Attack requires direct contact with an enemy party or stronghold.");
         }
         if (objective.owner.equals(attacker.team)) throw conflict("Your team already controls this stronghold.");
         attacker.attacked = true;
         siege(room, attacker, objective, GameSessionController::rollDie);
         finishAction(room);
+    }
+
+    // ------------------------------------------------------------------ bots
+
+    /**
+     * Plays one bot turn (called by the BotScheduler, under this game's lock) in its own
+     * transaction, which commits before the lock is released.
+     */
+    void playBotTurn(String code) {
+        transactions.executeWithoutResult(status -> playBotTurnNow(code));
+    }
+
+    private void playBotTurnNow(String code) {
+        Room room;
+        try {
+            room = loadRoom(code);
+        } catch (ResponseStatusException gone) {
+            return;
+        }
+        if (!"campaign".equals(room.status) || room.winner != null) return;
+        Party bot = currentTurnParty(room);
+        if (bot.bot == null || !bot.alive) return;
+        List<TerrainRegion> regions = terrainRegions.findByMapKeyAndMapLayerOrderByIdAsc("middle-earth", "middle-earth");
+        WarBot.playTurn(room, bot, new WarBot.Actions() {
+            @Override
+            public double cost(Room r, Party party, double x, double y) {
+                double[] target = snapToMountDoom(r, x, y);
+                return MovementPathCalculator.calculate(party.x, party.y, target[0], target[1], r.mapWidthMiles,
+                    r.mountDoomX, r.mountDoomY, regions).movementPoints();
+            }
+
+            @Override
+            public void move(Room r, Party party, double x, double y) {
+                applyMove(r, party, Math.max(0, Math.min(100, x)), Math.max(0, Math.min(100, y)));
+            }
+
+            @Override
+            public void attack(Room r, Party party, String targetId) {
+                applyAttack(r, party, targetId);
+            }
+
+            @Override
+            public void destroyRing(Room r, Party ringBearer) {
+                resolveRingDestruction(r, ringBearer, GameSessionController::rollDie);
+            }
+
+            @Override
+            public void endTurn(Room r) {
+                advanceTurn(r);
+            }
+        }, RANDOM);
         save(room);
-        return view(room, seat);
+    }
+
+    /** Queues the next bot turn if a bot is to act. */
+    private void scheduleBots(Room room) {
+        if (!"campaign".equals(room.status) || room.winner != null) return;
+        List<Party> order = turnOrder(room);
+        if (order.isEmpty() || room.turnIndex >= order.size()) return;
+        if (order.get(room.turnIndex).bot != null) bots.schedule(room.code, this::playBotTurn, room.lastBattle == null ? null : room.lastBattle.id);
     }
 
     /** One battle between two parties: one die per unit, the higher total wins, the loser loses one unit. */
@@ -625,6 +760,7 @@ public class GameSessionController {
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
                 "Could not save the game session.", error);
         }
+        scheduleBots(room);
     }
 
     static GameView view(Room room, String seat) {
@@ -647,13 +783,13 @@ public class GameSessionController {
                     hidden ? null : party.movementRemaining, party.movementMax, party.attackBoost,
                     party.armorClass, party.ring && "frodo".equals(room.ringHolder), party.alive,
                     party.hidden, party.playerName, hidden ? null : party.moved,
-                    hidden ? null : party.attacked, hidden ? null : party.terrain
+                    hidden ? null : party.attacked, hidden ? null : party.terrain, party.bot
                 );
             }).toList();
         List<SeatView> seatViews = room.parties.stream()
             .map(party -> new SeatView(party.id, party.name, party.team, party.army,
-                party.initialUnits, party.playerName, party.playerTokenHash != null,
-                representatives(party)))
+                party.initialUnits, party.playerName, seatTaken(party),
+                representatives(party), party.bot))
             .toList();
         Party active = "campaign".equals(room.status) ? currentTurnParty(room) : null;
         String activeCharacter = active == null ? null : active.id;
@@ -756,7 +892,7 @@ public class GameSessionController {
         return RANDOM.nextInt(6) + 1;
     }
 
-    private static boolean sameLocation(double x1, double y1, double x2, double y2) {
+    static boolean sameLocation(double x1, double y1, double x2, double y2) {
         return Math.hypot(x1 - x2, y1 - y2) < 0.5;
     }
 
@@ -864,13 +1000,14 @@ public class GameSessionController {
                                        List<MovementSegmentView> segments) {}
     private record MovementSegmentView(String terrain, double miles, double movementPoints) {}
     private record AttackRequest(String characterId, String targetId) {}
+    private record BotRequest(String characterId, String difficulty, String representative) {}
     record SeatView(String id, String name, String team, String army, int initialUnits,
-                           String playerName, boolean connected, List<String> representatives) {}
+                           String playerName, boolean connected, List<String> representatives, String bot) {}
     record PartyView(String id, String name, String team, String army, Integer units,
                              int initialUnits, Double x, Double y, Double movementRemaining,
                              double movementMax, int attackBoost, int armorClass, boolean ring,
                              boolean alive, boolean hidden, String playerName,
-                             Boolean moved, Boolean attacked, String terrain) {}
+                             Boolean moved, Boolean attacked, String terrain, String bot) {}
     record ObjectiveView(String id, String name, double x, double y, String owner,
                                  int armorClass, int units, int initialUnits) {}
     record GameView(String code, String status, double mapWidthMiles, int round,
@@ -981,6 +1118,8 @@ public class GameSessionController {
         public int attackBoost;
         public int armorClass = 10;
         public String playerName;
+        /** "easy" or "hard" when a bot plays this party; null for a person. */
+        public String bot;
         /** SHA-256 of this seat's secret; null while the seat is open. */
         public String playerTokenHash;
         /** Plain-text secret from older saves; hashed and cleared on load. */
