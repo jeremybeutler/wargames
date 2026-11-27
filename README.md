@@ -207,42 +207,52 @@ A second campaign on a map of Westeros and Essos. Choose **The Iron Throne** at
 the bottom of the War of the Ring home screen (or open `/?thrones=CODE`). Codes
 from either game can be typed into either Join box; the app opens the right one.
 
-The host sets the map width (2,500 miles by default), the last round (20) and
-whether the server plays the Dead when no one claims them. 3 to 8 players each
-claim a house on their own device and may choose which heir leads first:
-House Stark, Lannister, Targaryen, Baratheon, Greyjoy, Tyrell, Martell, or the
-Dead. Houses nobody claims become neutral castles. Every house plays for itself.
+The host sets the map width (2,500 miles by default). 2 to 7 houses play, each
+claimed by a person on their own device or by a bot the host adds: House Stark,
+Lannister, Targaryen, Baratheon, Greyjoy, Tyrell or Martell. A player may choose
+which heir leads first. Houses nobody claims become neutral castles. The Dead are
+always in the game, as three armies the server plays.
 
-The in-game **Rules** button has the full rules. In short:
+The first time a player opens a game, a four-card **How to play** guide explains
+it; the button of that name opens it again, with a link to the full rules. In short:
 
-- **Turns.** Collect gold (1 a castle, 2 for your own seat, 3 for King's
-  Landing), move once, then attack once. Spend gold on levies, fortifications,
-  sellswords in Braavos or Pentos, or an Iron Bank loan.
-- **Movement and battle** work as in War of the Ring, with snow, desert,
-  rivers, mountains, forest and Valyria's volcanic ground. Armies sail from
-  port to port, using the whole turn. The Greyjoys sail from any coast, and
-  dragons fly. The Wall can only be crossed through a castle you hold.
+- **The goal.** Hold every castle on the map at the end of a round, alone or with
+  your coalition; everyone in the coalition wins. Being the last side standing
+  (every house outside your coalition, and the Dead, destroyed) also wins. The
+  Dead win if every living house falls, or if they hold every castle. Neutral
+  castles start with small garrisons (1, or 2 for great seats and cities) so the
+  map can be taken.
+- **Your turn.** Collect gold (1 a castle, 2 for your own seat, 3 for King's
+  Landing), move once, then fight once. Gold raises troops (2 each, 2 a turn) in a
+  castle you hold. The turn card shows the steps and lights the next one.
+- **Movement and battle** work as in War of the Ring, with snow, desert, rivers,
+  mountains, forest and Valyria's volcanic ground. Tap the map to plan a march;
+  the bubble shows the cost. Armies sail from port to port, using the whole turn.
+  The Greyjoys sail from any coast, and dragons fly. The Wall can only be crossed
+  through a castle you or a partner hold. Attack buttons show your odds.
 - **Succession.** When a leader falls, the next heir rises at the house's seat.
   A house is out when its line ends or it holds no castle.
-- **Pacts.** Allies cannot attack each other and defend together. Breaking a
-  pact and attacking the same turn is a Red Wedding (+2 per die), and makes you
-  an oathbreaker for 3 rounds.
-- **Seasons.** Winter arrives in round 8 (Fate cards can bring it sooner). Snow
-  creeps south, and the Dead march on the Wall. The Night King dies only to
-  dragons, Valyrian steel (Jon, Jaime or Arya), or Dragonstone's dragonglass.
-- **Each house** has a passive ability and a once-per-game power. A Fate card
-  is drawn every round after the first.
-- **Winning.** Hold King's Landing for 3 rounds in a row (allies share the win as
-  Hand of the King), hold 7 of the 9 great seats, slay the Night King while
-  holding 3, or be the last house standing. The Dead win by taking King's
-  Landing or 5 castles south of the Wall. After the last round, the most great
-  seats wins.
+- **Coalitions.** Invite houses from the **Houses** panel at any time; accepting
+  joins your coalitions together. Partners can't attack each other, see each
+  other's armies, defend together and win together. Leaving (on your turn) and
+  attacking a former partner the same turn is a Red Wedding (+2 per die), and
+  makes you an oathbreaker: no new partners and no income for 3 rounds. Bots
+  accept an invitation when they are outnumbered or the Dead are near.
+- **The Long Night.** Winter arrives in round 8 (Fate cards can bring it
+  sooner), and everyone sees it fall. Snow creeps south, the Dead's three armies
+  grow every round, march on the Wall and then spread across the realm. Partners
+  who both fight the Dead during the Long Night are **forged in winter**: +1 on
+  every die for the rest of the game, while they stay together. Only dragons,
+  Valyrian steel (Jon, Jaime or Arya) or Dragonstone's dragonglass can slay the
+  Night King, and slaying him destroys every army of the Dead.
+- **Each house** has a passive ability and a once-per-game power. A Fate card is
+  drawn every round after the first.
 
 The rules are in `backend/src/main/java/org/wargames/ThronesGame.java`, with
-their fixed data in `ThronesRules.java`, the server's Dead player in
-`ThronesDeadAi.java`, and tests in `ThronesGameTest.java`. The API is under
-`/api/thrones`. Saved games share the `game_sessions` table, marked by a
-`game_type` column.
+their fixed data in `ThronesRules.java`, the Dead's armies in `ThronesDeadAi.java`
+(played through `BotScheduler` like any bot), and tests in `ThronesGameTest.java`.
+The API is under `/api/thrones`. Saved games share the `game_sessions` table,
+marked by a `game_type` column.
 
 Portraits are optional, as for War of the Ring. Put square images in
 `frontend/public/portraits/thrones/`, named after the leader in lowercase with
@@ -263,10 +273,54 @@ python scripts/generate_terrain.py --profile westeros     # terrain strokes and 
 
 The second command writes `backend/src/main/resources/westeros-terrain.json` and
 `westeros-land-mask.png`. The mask is used for sailing. Add `--preview
-terrain/westeros-preview.png` to see what was detected. The source art is
-1774 × 887, so `map.png` is a sharpened 4096 × 2048 enlargement and close
-zooms look soft. Replace `source-art.webp` with a larger 2:1 version (an AI
-upscale, say) to sharpen it. The Iron Throne screen does not load HD tiles yet.
+terrain/westeros-preview.png` to see what was detected.
+
+The art itself is only 1774 × 887, so the game uses an AI upscale of it for
+sharp zooming: the same picture with more pixels, nothing redrawn. With
+[Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN/releases)'s
+`realesrgan-ncnn-vulkan` (Windows build, about 45 MB, runs on the GPU) in a
+tools folder outside the project, and the art saved as `source.png`:
+
+```sh
+realesrgan-ncnn-vulkan -i source.png -o x4.png -n realesrgan-x4plus -s 4
+python -c "from PIL import Image; Image.open('x4.png').resize((8192, 4096), Image.LANCZOS).save('level1.png')"
+# level2.png (16384 x 8192): a second x4plus pass on level1.png, run in overlapping
+# blocks to fit in memory, each block shrunk by 2 and stitched back together
+python scripts/build_westeros_map.py --hd level1.png
+python scripts/make_map_tiles.py --pyramid westeros level1.png level2.png
+```
+
+`map.webp` (4096 × 2048) loads first. Zooming in loads 1024-px tiles from
+`frontend/public/map-assets/westeros/tiles/1/` (8K) and then `tiles/2/` (16K),
+only those in view; `tiles/tiles.json` lists the levels. The maximum zoom is set
+so one pixel of the 16K level fills about one pixel of the screen. The
+`realesrgan-x4plus` model keeps the painted texture; the anime model flattens it.
+
+## Playing with bots
+
+In either game's lobby, the host can seat a bot in any open seat (**+ Easy bot**
+or **+ Hard bot**), fill every open seat at once, or remove a bot with **×**. A
+bot seat counts as filled, so a game can start with any mix of people and bots,
+or bots alone. The server plays each bot's turn about 2.5 seconds after the
+previous action (`BotScheduler`), so everyone sees each move and battle play out.
+
+Bots only know what a player on their team would; armies hidden in the
+mountains are hidden from them too.
+
+- **War of the Ring** (`WarBot`). The Ring-bearer heads for Mount Doom; a hard
+  one steers around enemies it can see and waits a turn if the interceptors on
+  the mountain would likely kill it. Free Peoples bots clear enemies near Mount
+  Doom and the Ring-bearer and escort it. Sauron's bots hunt the Ring-bearer when
+  it shows itself and take the weakest strongholds; on hard, one of them guards
+  Mount Doom.
+- **The Iron Throne** (`ThronesBot`). Bot houses compete to win like players:
+  they raise levies at castles they hold, march on castles and armies, and value
+  King's Landing and the great seats. They never invite anyone, but accept an
+  invitation to join forces when they are outnumbered or the Dead are near. The
+  Dead's three armies are always played by the server, through the same paced turns.
+
+Hard bots simulate the dice before each fight and only take good odds; easy bots
+go for the nearest target, wander part of the way and take bad fights.
 
 ## Quick test games
 

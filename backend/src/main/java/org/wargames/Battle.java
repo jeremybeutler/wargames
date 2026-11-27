@@ -42,6 +42,26 @@ final class Battle {
         return new Result(attacker, defender, total(attacker), total(defender));
     }
 
+    /**
+     * The chance the attacker's total beats the defender's (ties go to the defender), estimated
+     * by rolling the battle many times. Bots use it to judge their odds.
+     */
+    static double winChance(int attackDice, int attackModifier, int defenseDice, int defenseModifier,
+                            java.util.Random random) {
+        if (attackDice <= 0) return 0;
+        if (defenseDice <= 0) return 1;
+        int wins = 0;
+        int trials = 600;
+        for (int trial = 0; trial < trials; trial++) {
+            int attack = 0;
+            for (int die = 0; die < attackDice; die++) attack += random.nextInt(6) + 1 + attackModifier;
+            int defense = 0;
+            for (int die = 0; die < defenseDice; die++) defense += random.nextInt(6) + 1 + defenseModifier;
+            if (attack > defense) wins++;
+        }
+        return wins / (double) trials;
+    }
+
     private static int total(List<Integer> dice) {
         return dice.stream().mapToInt(Integer::intValue).sum();
     }

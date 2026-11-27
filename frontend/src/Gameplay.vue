@@ -48,6 +48,20 @@ function partyInitial(party) {
 }
 const scaleRatio = 887 / 1774
 const currentView = ref('home')
+// Playable campaigns shown on the home screen. War of the Ring lives in this component;
+// The Iron Throne is its own app view.
+const CAMPAIGN_CHOICES = [
+  { id: 'wotr', name: 'War of the Ring', setting: 'Middle-earth', players: '6–8 players · teams',
+    blurb: 'Free Peoples against the Shadow. Move fellowships, raise armies and race the Ring to Mount Doom.' },
+  { id: 'thrones', name: 'The Iron Throne', setting: 'Westeros & Essos', players: '2–7 houses · coalitions',
+    blurb: 'Great houses join forces to hold the whole realm, and must survive the Long Night when the Dead march south.' },
+]
+function chooseCampaign(id) {
+  error.value = ''
+  notice.value = ''
+  if (id === 'thrones') emit('open-thrones', '')
+  else currentView.value = 'wotr-home'
+}
 const joinCode = ref('')
 const code = ref('')
 const playerName = ref('')
@@ -191,7 +205,7 @@ const campaignMapMarkers = computed(() => tileMapMarkers([
     x: game.value.mountDoomX,
     y: game.value.mountDoomY,
   }] : []),
-  ...visibleParties.value.map(party => ({
+  ...visibleParties.value.filter(party => !travelPositions.value[party.id]).map(party => ({
     id: party.id,
     key: `party:${party.id}`,
     kind: 'party',
@@ -199,7 +213,75 @@ const campaignMapMarkers = computed(() => tileMapMarkers([
     x: party.x,
     y: party.y,
   })),
-]))
+]).concat(
+  // Parties on the march are drawn where the animation has them, outside the clustering.
+  visibleParties.value.filter(party => travelPositions.value[party.id]).map(party => {
+    const at = travelPositions.value[party.id]
+    return { id: party.id, key: `party:${party.id}`, kind: 'party', party, x: at.x, y: at.y,
+      style: { left: `${at.x}%`, top: `${at.y}%` }, travelling: true }
+  }),
+))
+
+// ---------- Movement animation: parties glide along their route, tracing a line ----------
+// Moves are straight lines on the map, so the route is drawn from where a party stood to
+// where it ends up. Each trail fades away a few seconds after the party arrives.
+const travelPositions = ref({})
+const travelTrails = ref([])
+let lastPartyPositions = null
+let travelFrame = 0
+const TRAIL_FADE_MS = 3200
+const prefersReducedMotion = typeof window !== 'undefined'
+  && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+function travelDuration(from, to) {
+  const distance = Math.hypot(to.x - from.x, (to.y - from.y) * scaleRatio)
+  return Math.min(2600, 900 + distance * 90)
+}
+function easeInOut(t) {
+  return t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2
+}
+function stepTravel(now) {
+  const positions = {}
+  const trails = []
+  for (const trail of travelTrails.value) {
+    const elapsed = now - trail.start
+    const t = Math.min(1, Math.max(0, elapsed / trail.duration))
+    const eased = easeInOut(t)
+    const head = { x: trail.from.x + (trail.to.x - trail.from.x) * eased, y: trail.from.y + (trail.to.y - trail.from.y) * eased }
+    if (t < 1) positions[trail.id] = head
+    const fade = t < 1 ? 1 : Math.max(0, 1 - (elapsed - trail.duration) / TRAIL_FADE_MS)
+    if (fade > 0) trails.push({ ...trail, head, opacity: fade })
+  }
+  travelPositions.value = positions
+  travelTrails.value = trails
+  travelFrame = trails.length ? window.requestAnimationFrame(stepTravel) : 0
+}
+watch(() => game.value?.parties, parties => {
+  const next = {}
+  for (const party of parties || []) {
+    if (party.x !== null && party.alive) next[party.id] = { x: party.x, y: party.y, team: party.team }
+  }
+  const previous = lastPartyPositions
+  lastPartyPositions = next
+  // Only animate changes seen while watching the same game, not the first load.
+  if (!previous || prefersReducedMotion) return
+  const now = performance.now()
+  const started = []
+  for (const [id, to] of Object.entries(next)) {
+    const from = travelPositions.value[id] || previous[id]
+    if (!from || Math.hypot(to.x - from.x, to.y - from.y) < 0.05) continue
+    started.push({ id, from: { x: from.x, y: from.y }, to: { x: to.x, y: to.y }, start: now,
+      duration: travelDuration(from, to), team: to.team === 'Free Peoples' ? 'free' : 'dark', head: from, opacity: 1 })
+  }
+  if (!started.length) return
+  const startedIds = new Set(started.map(trail => trail.id))
+  travelTrails.value = [...travelTrails.value.filter(trail => !startedIds.has(trail.id)), ...started]
+  if (!travelFrame) travelFrame = window.requestAnimationFrame(stepTravel)
+})
+watch(() => game.value?.code, () => {
+  lastPartyPositions = null
+  travelTrails.value = []
+  travelPositions.value = {}
+})
 const visibleDetailPlaces = computed(() =>
   mapPlaces.value.filter(place =>
     (place.tier === 1 && mapZoom.value >= 1.5)
@@ -602,6 +684,38 @@ function beginPolling() {
 function stopPolling() {
   if (pollTimer) window.clearInterval(pollTimer)
   pollTimer = null
+}
+
+// The host can seat bots in the lobby: one seat at a time, or every open seat at once.
+const openSeatCount = computed(() => (game.value?.seats || []).filter(seat => !seat.connected).length)
+async function addBot(characterId, difficulty) {
+  error.value = ''
+  isSubmitting.value = true
+  try {
+    game.value = await apiRequest(`/api/games/${encodeURIComponent(code.value)}/bots`, {
+      method: 'POST',
+      headers: gameHeaders(),
+      body: JSON.stringify({ characterId, difficulty }),
+    })
+  } catch (requestError) {
+    error.value = requestError.message
+  } finally {
+    isSubmitting.value = false
+  }
+}
+async function removeBot(characterId) {
+  error.value = ''
+  isSubmitting.value = true
+  try {
+    game.value = await apiRequest(`/api/games/${encodeURIComponent(code.value)}/bots/${encodeURIComponent(characterId)}`, {
+      method: 'DELETE',
+      headers: gameHeaders(),
+    })
+  } catch (requestError) {
+    error.value = requestError.message
+  } finally {
+    isSubmitting.value = false
+  }
 }
 
 async function startCampaign() {
@@ -1162,9 +1276,16 @@ watch(() => [game.value?.code, game.value?.lastBattle?.id], ([gameCode, battleId
   }
   if (battleId && battleId !== seenBattleId) {
     seenBattleId = battleId
-    playBattle(game.value.lastBattle)
+    // A party that marched into the fight arrives on the map before the dice roll.
+    const battle = game.value.lastBattle
+    const now = performance.now()
+    const marching = travelTrails.value.reduce((wait, trail) => Math.max(wait, trail.start + trail.duration - now), 0)
+    window.clearTimeout(battleAfterMarchTimer)
+    if (marching > 0) battleAfterMarchTimer = window.setTimeout(() => playBattle(battle), marching + 350)
+    else playBattle(battle)
   }
 })
+let battleAfterMarchTimer = 0
 
 // Background music: local audio files played by plain Audio objects (no visible player).
 // The lobby and setup screens play the theme; the campaign plays the ambience track. Both
@@ -1331,13 +1452,69 @@ function readRecapMark() {
 function writeRecapMark(count) {
   try { window.localStorage.setItem(recapStorageKey(), String(count)) } catch { /* not saved */ }
 }
+// Turns raw event lines into short, scannable entries grouped by round.
+const RECAP_LIMIT = 14
+function recapEntry(text) {
+  let match = text.match(/^(.+?) moved ([\d.]+) map miles, spending ([\d.]+) movement points(?: including (\d+) river crossings?)?\.$/)
+  if (match) {
+    const rivers = match[4] ? ` · ${match[4]} river${match[4] === '1' ? '' : 's'}` : ''
+    return { kind: 'move', icon: '➜', who: match[1], what: 'moved', detail: `${Math.round(Number(match[2]))} mi${rivers}` }
+  }
+  match = text.match(/^(.+?) attacked (.+?): (.+?) vs\. (.+?)\. (.+)$/)
+  if (match) {
+    const fell = /was defeated\.$/.test(match[5])
+    return { kind: fell ? 'fall' : 'battle', icon: '⚔', who: match[1], what: `attacked ${match[2]}`,
+      detail: `${match[5].replace(/\.$/, '')} · rolled ${match[3]} vs ${match[4]}` }
+  }
+  match = text.match(/^(.+?) has fallen\.$/)
+  if (match) return { kind: 'fall', icon: '☠', who: match[1], what: 'has fallen', detail: '' }
+  match = text.match(/^(.+?) and (.+?) made contact\.$/)
+  if (match) return { kind: 'contact', icon: '◉', who: match[1], what: `ran into ${match[2]}`, detail: '' }
+  if (/Ring/.test(text)) return { kind: 'ring', icon: '⌁', who: '', what: text, detail: '' }
+  return { kind: 'other', icon: '•', who: '', what: text, detail: '' }
+}
+function buildAwayRecap(events) {
+  const groups = []
+  let group = { round: null, entries: [] }
+  const counts = { move: 0, battle: 0, fall: 0 }
+  for (const text of events) {
+    const round = text.match(/^Round (\d+) begins/)
+    if (round) {
+      if (group.entries.length) groups.push(group)
+      group = { round: Number(round[1]), entries: [] }
+      continue
+    }
+    const entry = recapEntry(text)
+    if (entry.kind === 'fall') counts.fall += 1
+    if (entry.kind === 'battle' || (entry.kind === 'fall' && entry.icon === '⚔')) counts.battle += 1
+    if (entry.kind === 'move') counts.move += 1
+    group.entries.push(entry)
+  }
+  if (group.entries.length) groups.push(group)
+  // Keep the most recent entries, dropping whole older lines first.
+  let hidden = 0
+  let total = groups.reduce((sum, item) => sum + item.entries.length, 0)
+  while (total > RECAP_LIMIT && groups.length) {
+    const first = groups[0]
+    first.entries.shift()
+    hidden += 1
+    total -= 1
+    if (!first.entries.length) groups.shift()
+  }
+  const summary = [
+    counts.move && `${counts.move} move${counts.move === 1 ? '' : 's'}`,
+    counts.battle && `${counts.battle} battle${counts.battle === 1 ? '' : 's'}`,
+    counts.fall && `${counts.fall} fallen`,
+  ].filter(Boolean).join(' · ')
+  return { groups, hidden, summary }
+}
 watch(isMyTurn, (mine, wasMine) => {
   const current = game.value
   if (!current?.ownCharacterId) return
   if (mine && !wasMine) {
     const seen = readRecapMark()
     const events = current.events.slice(Number.isFinite(seen) && seen > 0 ? seen : current.events.length)
-    awayRecap.value = events.length ? { events: events.slice(-8), more: Math.max(0, events.length - 8) } : null
+    awayRecap.value = events.length ? buildAwayRecap(events) : null
   } else if (!mine && wasMine) {
     writeRecapMark(current.events.length)
     awayRecap.value = null
@@ -1507,6 +1684,8 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   stopPolling()
+  if (travelFrame) window.cancelAnimationFrame(travelFrame)
+  window.clearTimeout(battleAfterMarchTimer)
   window.clearTimeout(suppressMapClickTimer)
   window.removeEventListener('storage', refreshSavedSessions)
   window.removeEventListener('resize', onWindowResize)
@@ -1526,7 +1705,7 @@ onBeforeUnmount(() => {
         <span><strong>WARGAMES</strong><small>FIELD CAMPAIGN</small></span>
       </a>
       <div class="game-topbar-title">
-        {{ currentView === 'host' ? 'HOST SETUP' : currentView === 'seat' ? 'JOIN CAMPAIGN' : currentView === 'lobby' ? 'GAME LOBBY' : currentView === 'character' ? `${ownParty?.name || 'CHARACTER'} · ${isMyTurn ? 'YOUR TURN' : 'WAITING'}` : currentView === 'campaign' ? 'CAMPAIGN' : 'JOIN GAME' }}
+        {{ currentView === 'host' ? 'HOST SETUP' : currentView === 'seat' ? 'JOIN CAMPAIGN' : currentView === 'lobby' ? 'GAME LOBBY' : currentView === 'character' ? `${ownParty?.name || 'CHARACTER'} · ${isMyTurn ? 'YOUR TURN' : 'WAITING'}` : currentView === 'campaign' ? 'CAMPAIGN' : currentView === 'home' ? 'CHOOSE CAMPAIGN' : 'JOIN GAME' }}
       </div>
       <div class="game-topbar-actions">
         <span v-if="game" class="game-status"><i></i>{{ game.status === 'lobby' ? 'WAITING' : `ROUND ${game.round}` }}</span>
@@ -1633,14 +1812,42 @@ onBeforeUnmount(() => {
     </div>
 
     <section v-if="currentView === 'home'" class="welcome-screen">
+      <div class="welcome-card chooser-card">
+        <p class="eyebrow">WAR GAMES</p>
+        <h1>Choose your campaign</h1>
+        <p class="welcome-subtitle">Pick a war to host, or join one with a code.</p>
+        <div class="campaign-list" role="list">
+          <button v-for="item in CAMPAIGN_CHOICES" :key="item.id" type="button" role="listitem"
+            class="campaign-choice" :class="`campaign-choice-${item.id}`" @click="chooseCampaign(item.id)">
+            <span class="campaign-choice-art" aria-hidden="true"></span>
+            <span class="campaign-choice-copy">
+              <small>{{ item.setting }}</small>
+              <strong>{{ item.name }}</strong>
+              <span>{{ item.blurb }}</span>
+              <em>{{ item.players }}</em>
+            </span>
+            <span class="campaign-choice-go" aria-hidden="true">→</span>
+          </button>
+        </div>
+        <div class="welcome-divider"><span>or join a game in progress</span></div>
+        <form class="join-form" @submit.prevent="findGame">
+          <label for="game-code">GAME CODE</label>
+          <input id="game-code" v-model="joinCode" maxlength="6" autocomplete="one-time-code" placeholder="Enter code" />
+          <button class="gold-button" type="submit" :disabled="isSubmitting || !joinCode.trim()">Join game</button>
+        </form>
+        <p class="welcome-footnote">Codes work for every campaign. Saved seats are listed under each campaign.</p>
+      </div>
+    </section>
+
+    <section v-else-if="currentView === 'wotr-home'" class="welcome-screen">
       <div class="welcome-card">
         <div class="ring-emblem"><span></span></div>
         <p class="eyebrow">MIDDLE-EARTH STRATEGY</p>
         <h1>War of the Ring</h1>
         <p class="welcome-subtitle">Join your campaign</p>
         <form class="join-form" @submit.prevent="findGame">
-          <label for="game-code">GAME CODE</label>
-          <input id="game-code" v-model="joinCode" maxlength="6" autocomplete="one-time-code" placeholder="Enter code" />
+          <label for="wotr-game-code">GAME CODE</label>
+          <input id="wotr-game-code" v-model="joinCode" maxlength="6" autocomplete="one-time-code" placeholder="Enter code" />
           <button class="gold-button" type="submit" :disabled="isSubmitting || !joinCode.trim()">Join game</button>
         </form>
         <section v-if="savedSessions.length" class="saved-sessions">
@@ -1657,9 +1864,7 @@ onBeforeUnmount(() => {
         <div class="welcome-divider"><span>or</span></div>
         <button class="text-button" type="button" @click="currentView = 'host'">Host a game</button>
         <p class="welcome-footnote">Enter the code shared by your host. Saved seats stay available on this device.</p>
-        <button class="thrones-link" type="button" @click="emit('open-thrones', '')">
-          <strong>The Iron Throne</strong><small>A Game of Thrones campaign · Westeros &amp; Essos →</small>
-        </button>
+        <button class="all-campaigns-link" type="button" @click="currentView = 'home'">← All campaigns</button>
       </div>
     </section>
 
@@ -1790,6 +1995,12 @@ onBeforeUnmount(() => {
             <span class="seat-avatar"><img v-if="hasPortrait(seat.name)" class="portrait" :src="portraitUrl(seat.name)" alt="" @error="markPortraitMissing(seat.name)" /><template v-else>{{ seat.name[0] }}</template></span>
             <span class="seat-details"><strong>{{ seat.name }}</strong><small>{{ seat.army }} · {{ seat.initialUnits }} units</small></span>
             <span class="seat-status"><i :class="{ connected: seat.connected }"></i>{{ seat.connected ? seat.playerName : 'Open seat' }}</span>
+            <span v-if="isHost && !seat.connected" class="bot-actions">
+              <button type="button" :disabled="isSubmitting" @click="addBot(seat.id, 'easy')">+ Easy bot</button>
+              <button type="button" :disabled="isSubmitting" @click="addBot(seat.id, 'hard')">+ Hard bot</button>
+            </span>
+            <button v-else-if="isHost && seat.bot" class="bot-remove" type="button" :disabled="isSubmitting"
+              :aria-label="`Remove the bot from ${seat.name}`" title="Remove bot" @click="removeBot(seat.id)">×</button>
           </article>
         </section>
         <section class="lobby-team dark-group">
@@ -1798,8 +2009,19 @@ onBeforeUnmount(() => {
             <span class="seat-avatar"><img v-if="hasPortrait(seat.name)" class="portrait" :src="portraitUrl(seat.name)" alt="" @error="markPortraitMissing(seat.name)" /><template v-else>{{ seat.name[0] }}</template></span>
             <span class="seat-details"><strong>{{ seat.name }}</strong><small>{{ seat.army }} · {{ seat.initialUnits }} units</small></span>
             <span class="seat-status"><i :class="{ connected: seat.connected }"></i>{{ seat.connected ? seat.playerName : 'Open seat' }}</span>
+            <span v-if="isHost && !seat.connected" class="bot-actions">
+              <button type="button" :disabled="isSubmitting" @click="addBot(seat.id, 'easy')">+ Easy bot</button>
+              <button type="button" :disabled="isSubmitting" @click="addBot(seat.id, 'hard')">+ Hard bot</button>
+            </span>
+            <button v-else-if="isHost && seat.bot" class="bot-remove" type="button" :disabled="isSubmitting"
+              :aria-label="`Remove the bot from ${seat.name}`" title="Remove bot" @click="removeBot(seat.id)">×</button>
           </article>
         </section>
+      </div>
+      <div v-if="isHost && openSeatCount" class="bot-fill">
+        <span>Fill {{ openSeatCount === 1 ? 'the open seat' : `the ${openSeatCount} open seats` }} with bots:</span>
+        <button type="button" :disabled="isSubmitting" @click="addBot(null, 'easy')">Easy</button>
+        <button type="button" :disabled="isSubmitting" @click="addBot(null, 'hard')">Hard</button>
       </div>
       <p class="lobby-footnote">{{ seatCount }} parties · {{ teamUnits }} army units per team</p>
       <button v-if="isHost" class="gold-button start-campaign-button" type="button" :disabled="isSubmitting || !allSeatsTaken" @click="startCampaign">
@@ -1814,17 +2036,17 @@ onBeforeUnmount(() => {
         <aside v-if="currentView === 'campaign'" class="campaign-sidebar">
           <p class="eyebrow">ROUND {{ game.round }}</p>
           <h1>{{ game.activeTeam || 'Campaign' }}</h1>
-          <p class="active-party-label">{{ activeParty?.name || 'Turn complete' }} · {{ isMyTurn ? 'Your turn' : 'Active party' }}</p>
+          <p class="active-party-label">{{ activeParty?.name || 'Turn complete' }} · {{ isMyTurn ? 'Your turn' : activeParty?.bot ? 'Bot is playing…' : 'Active party' }}</p>
           <section class="sidebar-card">
             <h2>FREE PEOPLES</h2>
             <div v-for="party in game.parties.filter(item => item.team === 'Free Peoples')" :key="party.id" class="party-list-row" :class="{ active: party.id === game.activeCharacter }">
-              <span>{{ party.name }}</span><small>{{ party.units === null ? 'Hidden' : `${party.units}/${party.initialUnits}` }}</small>
+              <span>{{ party.name }}<em v-if="party.bot" class="bot-tag">bot</em></span><small>{{ party.units === null ? 'Hidden' : `${party.units}/${party.initialUnits}` }}</small>
             </div>
           </section>
           <section class="sidebar-card dark-card">
             <h2>SAURON'S FORCES</h2>
             <div v-for="party in game.parties.filter(item => item.team !== 'Free Peoples')" :key="party.id" class="party-list-row" :class="{ active: party.id === game.activeCharacter }">
-              <span>{{ party.name }}</span><small>{{ party.units === null ? 'Hidden' : `${party.units}/${party.initialUnits}` }}</small>
+              <span>{{ party.name }}<em v-if="party.bot" class="bot-tag">bot</em></span><small>{{ party.units === null ? 'Hidden' : `${party.units}/${party.initialUnits}` }}</small>
             </div>
           </section>
           <section class="sidebar-card objective-list">
@@ -1856,8 +2078,16 @@ onBeforeUnmount(() => {
               <span v-for="place in visibleDetailPlaces" :key="`detail:${place.id}`" class="detail-place-label"
                 :class="{ landmark: place.tier >= 2 }"
                 :style="{ left: `${place.x}%`, top: `${place.y}%` }">{{ place.name }}</span>
+              <svg v-if="travelTrails.length" class="travel-trails" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                <g v-for="trail in travelTrails" :key="`trail:${trail.id}:${trail.start}`" :class="`trail-${trail.team}`" :opacity="trail.opacity">
+                  <line class="trail-ghost" :x1="trail.from.x" :y1="trail.from.y" :x2="trail.to.x" :y2="trail.to.y" />
+                  <line class="trail-path" :x1="trail.from.x" :y1="trail.from.y" :x2="trail.head.x" :y2="trail.head.y" />
+                </g>
+              </svg>
+              <span v-for="trail in travelTrails" :key="`trail-start:${trail.id}:${trail.start}`" class="trail-origin"
+                :class="`trail-${trail.team}`" :style="{ left: `${trail.from.x}%`, top: `${trail.from.y}%`, opacity: trail.opacity }"></span>
               <span v-for="marker in campaignMapMarkers" :key="marker.key" class="map-icon-marker"
-                :class="[`map-icon-${marker.kind}`, { selected: selectedMarkerId === marker.key, active: marker.kind === 'party' && marker.party.id === game.activeCharacter, own: marker.kind === 'party' && marker.party.id === game.ownCharacterId }]"
+                :class="[`map-icon-${marker.kind}`, { travelling: marker.travelling, selected: selectedMarkerId === marker.key, active: marker.kind === 'party' && marker.party.id === game.activeCharacter, own: marker.kind === 'party' && marker.party.id === game.ownCharacterId }]"
                 :style="marker.style">
                 <button v-if="marker.kind === 'party'" type="button" class="campaign-party-icon"
                   :class="[partyClass(marker.party), { 'multi-initial': partyInitial(marker.party).length > 1 }]"
@@ -1914,8 +2144,20 @@ onBeforeUnmount(() => {
             <div v-if="movementMode" class="map-instruction">Tap map to choose destination</div>
             <section v-if="awayRecap && currentView !== 'host'" class="away-recap" aria-label="While you were away" @click.stop @pointerdown.stop @wheel.stop>
               <header><strong>While you were away</strong><button type="button" aria-label="Dismiss" @click="awayRecap = null">×</button></header>
-              <p v-if="awayRecap.more" class="away-more">…and {{ awayRecap.more }} earlier {{ awayRecap.more === 1 ? 'event' : 'events' }}</p>
-              <ul><li v-for="(event, index) in awayRecap.events" :key="index">{{ event }}</li></ul>
+              <p v-if="awayRecap.summary" class="away-summary">{{ awayRecap.summary }}</p>
+              <p v-if="awayRecap.hidden" class="away-more">{{ awayRecap.hidden }} earlier {{ awayRecap.hidden === 1 ? 'event' : 'events' }} in the log</p>
+              <div v-for="(group, groupIndex) in awayRecap.groups" :key="groupIndex" class="away-group">
+                <h3 v-if="group.round">Round {{ group.round }}</h3>
+                <ul>
+                  <li v-for="(entry, index) in group.entries" :key="index" :class="`away-${entry.kind}`">
+                    <span class="away-icon" aria-hidden="true">{{ entry.icon }}</span>
+                    <span class="away-text">
+                      <b v-if="entry.who">{{ entry.who }}</b> {{ entry.what }}
+                      <small v-if="entry.detail">{{ entry.detail }}</small>
+                    </span>
+                  </li>
+                </ul>
+              </div>
               <button class="gold-button" type="button" @click="awayRecap = null">Your turn</button>
             </section>
           </div>
@@ -2046,7 +2288,15 @@ onBeforeUnmount(() => {
               <div v-if="['frodo', 'sauron'].includes(ownParty.id)"><dt>RING</dt><dd>{{ game.ringHolder === 'frodo' ? `With ${ringBearerName}` : game.ringHolder === 'destroyed' ? 'Destroyed' : 'Captured by Sauron' }}</dd></div>
             </dl>
             <div v-if="isMyTurn" class="character-actions">
-              <button class="gold-button" type="button" :disabled="!canMove || isSubmitting" @click="startMove">➜　Move</button>
+              <button v-if="!movementMode" class="gold-button" type="button" :disabled="!canMove || isSubmitting" @click="startMove">➜　Move</button>
+              <template v-else>
+                <button class="gold-button" type="button"
+                  :disabled="!movementPreview || movementPreview.remaining < -0.0001 || isSubmitting" @click="confirmMove">
+                  {{ movementPreview ? `✓　Confirm move · ${movementPreview.movementPoints.toFixed(1)} pts`
+                    : movementPreviewLoading ? 'Calculating…' : 'Click the map to choose a destination' }}
+                </button>
+                <button class="action-button" type="button" @click="cancelMove">Cancel move</button>
+              </template>
               <div v-if="movementPreview" class="move-preview">
                 <strong>{{ movementPreview.miles.toFixed(1) }} map miles</strong>
                 <span>Cost {{ movementPreview.movementPoints.toFixed(1) }} points · {{ movementPreview.remaining.toFixed(1) }} left</span>
@@ -2057,11 +2307,7 @@ onBeforeUnmount(() => {
                   {{ movementPreview.riverCrossings }} river crossing{{ movementPreview.riverCrossings === 1 ? '' : 's' }} ·
                   {{ movementPreview.riverCrossings }} extra point{{ movementPreview.riverCrossings === 1 ? '' : 's' }}
                 </span>
-                <button class="gold-button" type="button"
-                  :disabled="movementPreview.remaining < -0.0001 || isSubmitting"
-                  @click="submitAction('move', { characterId: ownParty.id, x: destination.x, y: destination.y })">
-                  Confirm move
-                </button>
+                <span v-if="movementPreview.remaining < -0.0001" class="move-preview-over">Too far: pick a closer destination.</span>
               </div>
               <p v-else-if="movementPreviewLoading" class="move-preview-loading">Calculating terrain costs…</p>
               <section v-if="contactTargets.length" class="battle-panel" aria-label="Battle actions">
@@ -2145,7 +2391,7 @@ onBeforeUnmount(() => {
 .eyebrow,.setup-label,.welcome-card label,.invite-panel label { display: block; color: #aeb8a9; font-size: 9px; font-weight: 700; letter-spacing: 1.5px; }
 .game-app h1 { margin: 8px 0; color: #f2efe4; font: 600 26px/1.1 'Barlow Condensed', sans-serif; }
 .muted-copy { color: var(--muted); font-size: 11px; line-height: 1.55; }
-.welcome-screen { flex: 1; display: grid; place-items: center; padding: 24px 16px; background: linear-gradient(#101b20b8,#101b20d9), url('/map-assets/middle-earth/map.webp') center / cover; }
+.welcome-screen { flex: 1; min-height: 0; overflow-y: auto; display: grid; place-items: safe center; padding: 24px 16px; background: linear-gradient(#101b20b8,#101b20d9), url('/map-assets/middle-earth/map.webp') center / cover; }
 .thrones-link { width: 100%; margin-top: 16px; display: grid; gap: 3px; padding: 11px 14px; border: 1px solid #7a3a2e; border-radius: 10px; background: linear-gradient(90deg, #2a1417, #1b1a1f); color: #f2dfb4; text-align: left; cursor: pointer; font: inherit; }
 .thrones-link strong { font: 600 15px 'Cinzel', 'Barlow Condensed', serif; letter-spacing: 1px; }
 .thrones-link small { color: #c7a98d; font-size: 11px; }
@@ -2204,6 +2450,15 @@ onBeforeUnmount(() => {
 .map-icon-marker.active { z-index: 4; }
 .map-icon-marker.own { z-index: 3; }
 .map-icon-marker.selected { z-index: 6; }
+.map-icon-marker.travelling { z-index: 5; }
+.travel-trails { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.travel-trails line { vector-effect: non-scaling-stroke; stroke-linecap: round; fill: none; }
+.travel-trails .trail-ghost { stroke: rgba(10,9,12,.55); stroke-width: 2; stroke-dasharray: 2 6; }
+.travel-trails .trail-path { stroke-width: 3; stroke-dasharray: 9 6; filter: drop-shadow(0 0 3px rgba(0,0,0,.9)); }
+.travel-trails .trail-free .trail-path { stroke: #f2d578; }
+.travel-trails .trail-dark .trail-path { stroke: #e0583f; }
+.trail-origin { position: absolute; z-index: 1; width: 10px; height: 10px; border: 2px solid #f2d578; border-radius: 50%; background: rgba(10,9,12,.7); transform: translate(-50%,-50%) scale(var(--marker-scale, 1)); pointer-events: none; }
+.trail-origin.trail-dark { border-color: #e0583f; }
 .host-party-pin,.campaign-party-icon,.objective-pin,.stronghold-icon { display: grid; place-items: center; padding: 0; cursor: pointer; }
 .host-party-pin,.campaign-party-icon { width: 30px; height: 30px; border: 2px solid #e3d39e; border-radius: 50%; background: #428478; color: #fff4d0; box-shadow: 0 2px 6px #101c20; font: 700 11px 'DM Sans',sans-serif; }
 .host-party-pin { width: 27px; height: 27px; }
@@ -2228,7 +2483,7 @@ onBeforeUnmount(() => {
 .map-marker-info span { color: #afbeb3; font-size: 8px; white-space: normal; }
 .marker-battle-button { min-height: 28px; padding: 4px 7px; border: 1px solid #a68b57; border-radius: 4px; background: #3a3222; color: #ead9a2; font: 600 9px 'DM Sans',sans-serif; cursor: pointer; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; clip-path: inset(50%); }
-.seat-screen { flex: 1; min-height: 0; overflow-y: auto; display: grid; place-items: center; padding: 20px; }
+.seat-screen { flex: 1; min-height: 0; overflow-y: auto; display: grid; place-items: safe center; padding: 20px; }
 .seat-card { width: min(100%, 940px); padding: clamp(20px,4vw,36px); border: 1px solid #445755; border-radius: 13px; background: #142329; }
 .seat-card>.eyebrow,.seat-card>h1,.seat-card>.muted-copy { text-align: center; }
 .seat-card>.eyebrow { color: #d6b66f; }
@@ -2375,7 +2630,7 @@ onBeforeUnmount(() => {
 .sound-toggle[aria-pressed="false"] { opacity: .6; }
 .tv-toggle[aria-pressed="true"] { border-color: var(--gold); color: var(--gold); }
 /* "While you were away" */
-.away-recap { position: absolute; top: 12px; left: 50%; z-index: 6; width: min(360px, calc(100% - 24px)); max-height: calc(100% - 24px); overflow-y: auto; padding: 12px 14px 14px; border: 1px solid #5d6b55; border-radius: 10px; background: #142228f2; color: #d6ddd6; font-size: 12px; line-height: 1.45; text-align: left; box-shadow: 0 10px 30px #0008; transform: translateX(-50%); cursor: default; }
+.away-recap { position: absolute; top: 12px; left: 50%; z-index: 9; width: min(360px, calc(100% - 24px)); max-height: calc(100% - 24px); overflow-y: auto; padding: 12px 14px 14px; border: 1px solid #5d6b55; border-radius: 10px; background: #142228f2; color: #d6ddd6; font-size: 12px; line-height: 1.45; text-align: left; box-shadow: 0 10px 30px #0008; transform: translateX(-50%); cursor: default; }
 .away-recap header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
 .away-recap header strong { color: var(--gold); font-size: 13px; letter-spacing: .5px; }
 .away-recap header button { width: 28px; height: 28px; border: 0; background: transparent; color: #aab8ad; font-size: 20px; cursor: pointer; }
@@ -2609,6 +2864,34 @@ onBeforeUnmount(() => {
 .thrones-link small { color: #b99b86; font-family: var(--cine-serif); font-style: italic; font-size: 14px; }
 .thrones-link:hover { border-color: #b3342b; box-shadow: inset 0 0 30px rgba(179,52,43,.2), 0 0 24px rgba(179,52,43,.25); }
 
+/* ---------- Campaign chooser ---------- */
+.welcome-card.chooser-card { width: min(100%, 680px); }
+.campaign-list { display: grid; gap: 12px; margin-top: 6px; }
+.campaign-choice {
+  position: relative; display: grid; grid-template-columns: 112px 1fr auto; align-items: stretch; gap: 0;
+  overflow: hidden; padding: 0; border: 1px solid var(--cine-line-strong); border-radius: 4px;
+  background: rgba(10,9,12,.85); color: var(--cine-ink); font: inherit; text-align: left; cursor: pointer;
+  transition: border-color .2s, box-shadow .2s, transform .2s;
+}
+.campaign-choice:hover, .campaign-choice:focus-visible { border-color: var(--cine-gold); box-shadow: 0 0 26px var(--cine-glow); transform: translateY(-1px); outline: none; }
+.campaign-choice-art { min-height: 112px; background-size: cover; background-position: center; filter: saturate(.85) brightness(.85); }
+.campaign-choice-wotr .campaign-choice-art { background-image: linear-gradient(90deg, transparent 60%, rgba(10,9,12,.9)), url('/map-assets/middle-earth/map.webp'); background-position: 72% 60%; }
+.campaign-choice-thrones .campaign-choice-art { background-image: linear-gradient(90deg, transparent 60%, rgba(10,9,12,.9)), url('/map-assets/westeros/map.webp'); background-position: 30% 40%; }
+.campaign-choice-thrones { border-color: #6e2a20; }
+.campaign-choice-thrones:hover, .campaign-choice-thrones:focus-visible { border-color: #b3342b; box-shadow: 0 0 26px rgba(179,52,43,.3); }
+.campaign-choice-copy { display: grid; align-content: center; gap: 4px; padding: 14px 16px; }
+.campaign-choice-copy small { color: #b39a6a; font-size: 9px; font-weight: 700; letter-spacing: 2.4px; text-transform: uppercase; }
+.campaign-choice-copy strong { color: #f2d9a6; font: 700 18px var(--cine-title); letter-spacing: 2px; }
+.campaign-choice-copy span { color: var(--cine-muted); font: 500 14px/1.35 var(--cine-serif); }
+.campaign-choice-copy em { color: var(--cine-dim); font-size: 10px; font-style: normal; letter-spacing: 1px; }
+.campaign-choice-go { display: grid; place-items: center; padding: 0 18px; color: var(--cine-gold); font-size: 20px; }
+.all-campaigns-link { margin-top: 14px; padding: 6px; border: 0; background: none; color: var(--cine-muted); font: italic 500 14px var(--cine-serif); cursor: pointer; }
+.all-campaigns-link:hover { color: var(--cine-gold); }
+@media (max-width: 520px) {
+  .campaign-choice { grid-template-columns: 1fr auto; }
+  .campaign-choice-art { display: none; }
+}
+
 /* ---------- Host setup, seats and lobby ---------- */
 .host-sidebar { border-right-color: var(--cine-line); background: linear-gradient(180deg, #121015, #0c0b0e); }
 .scale-input span, .scale-help, .host-summary { color: var(--cine-muted); }
@@ -2803,6 +3086,18 @@ onBeforeUnmount(() => {
 }
 .away-recap header strong { color: var(--cine-gold-hi); font: 700 13px var(--cine-title); letter-spacing: 2px; }
 .away-recap li { font-family: var(--cine-serif); font-size: 15px; line-height: 1.3; }
+.away-recap .away-summary { margin: 0 0 8px; color: var(--cine-gold); font: 700 10px var(--cine-title); letter-spacing: 1.6px; text-transform: uppercase; }
+.away-recap .away-group h3 { margin: 10px 0 4px; padding-bottom: 3px; border-bottom: 1px solid var(--cine-line); color: var(--cine-muted); font: 700 9px var(--cine-title); letter-spacing: 2px; text-transform: uppercase; }
+.away-recap .away-group ul { margin: 0 0 4px; padding: 0; list-style: none; }
+.away-recap .away-group li { display: grid; grid-template-columns: 18px 1fr; gap: 6px; align-items: start; margin: 0; padding: 4px 0; font-size: 14px; line-height: 1.25; }
+.away-recap .away-icon { color: var(--cine-dim); font-family: 'DM Sans', sans-serif; font-size: 12px; line-height: 1.5; text-align: center; }
+.away-recap .away-text b { color: var(--cine-ink); font-weight: 700; }
+.away-recap .away-text small { display: block; color: var(--cine-dim); font: 11px 'DM Sans', sans-serif; }
+.away-recap .away-battle .away-icon { color: #d08a5a; }
+.away-recap .away-fall .away-icon, .away-recap .away-fall b { color: #e0705a; }
+.away-recap .away-ring .away-icon, .away-recap .away-ring .away-text { color: var(--cine-gold-hi); }
+.away-recap .away-move .away-icon { color: var(--cine-gold); }
+.move-preview-over { color: #e0705a !important; font-weight: 600; }
 @media (max-width: 760px) {
   .game-app { min-height: 0; }
   .game-topbar { min-height: 53px; gap: 10px; padding: 0 12px; }
@@ -2913,6 +3208,19 @@ onBeforeUnmount(() => {
   .map-editor-link { max-width: 42px; overflow: hidden; }
   .host-sidebar .roster-group { width: 100%; }
   .host-sidebar .dark-group { margin-left: 0; }
+}
+/* Bots */
+.bot-actions { display: flex; gap: 4px; margin-left: 6px; }
+.bot-actions button, .bot-fill button { min-height: 26px; padding: 0 8px; border: 1px solid var(--cine-line-strong); border-radius: 13px; background: rgba(217,178,106,.05); color: #e1d3b0; font: 600 10px var(--cine-title); letter-spacing: .6px; cursor: pointer; white-space: nowrap; }
+.bot-actions button:hover:not(:disabled), .bot-fill button:hover:not(:disabled) { border-color: var(--cine-gold); color: var(--cine-gold-hi); box-shadow: 0 0 10px var(--cine-glow); }
+.bot-actions button:disabled, .bot-fill button:disabled, .bot-remove:disabled { opacity: .45; cursor: wait; }
+.bot-remove { width: 24px; height: 24px; flex: none; margin-left: 6px; border: 1px solid var(--cine-line); border-radius: 50%; background: transparent; color: var(--cine-muted); font-size: 15px; line-height: 1; cursor: pointer; }
+.bot-remove:hover:not(:disabled) { border-color: var(--cine-ember); color: #ffd0bc; }
+.bot-fill { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; margin: 12px 0 4px; color: var(--cine-muted); font: italic 500 15px var(--cine-serif); }
+.bot-tag { margin-left: 6px; padding: 1px 6px; border: 1px solid var(--cine-line-strong); border-radius: 8px; color: var(--cine-gold); font: 600 8px var(--cine-title); font-style: normal; letter-spacing: 1px; text-transform: uppercase; vertical-align: middle; }
+@media (max-width: 760px) {
+  .lobby-seat { flex-wrap: wrap; }
+  .bot-actions { width: 100%; justify-content: flex-end; margin: 4px 0 0; }
 }
 /* Cinematic theme on phones: dock, sheet and bottom nav surfaces. */
 @media (max-width: 760px) {
