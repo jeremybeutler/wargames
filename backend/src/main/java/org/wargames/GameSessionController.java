@@ -587,6 +587,9 @@ public class GameSessionController {
         String normalized = code.toUpperCase(Locale.ROOT);
         GameSession session = games.findById(normalized)
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Game code not found."));
+        if (GameSession.IRON_THRONE.equals(session.getGameType())) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "That code is for a game of The Iron Throne.");
+        }
         try {
             Room room = objectMapper.readValue(session.getState(), Room.class);
             hashLegacySecrets(room);

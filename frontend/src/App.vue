@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Gameplay from './Gameplay.vue'
+import ThronesGameplay from './thrones/ThronesGameplay.vue'
 
 const ART_MAP = { width: 1579, height: 797 }
 const TILE_SIZE = 256
@@ -18,7 +19,23 @@ const TERRAIN_TYPES = [
   { value: 'volcanic', label: 'Volcanic', name: 'Volcanic', color: '#c95f45' },
   { value: 'other', label: 'Other', name: 'Terrain', color: '#d1b56c' },
 ]
-const appView = ref(new URLSearchParams(window.location.search).get('view') === 'map' ? 'map' : 'game')
+const startParams = new URLSearchParams(window.location.search)
+const appView = ref(startParams.get('view') === 'map' ? 'map' : startParams.get('thrones') ? 'thrones' : 'game')
+const thronesCode = ref('')
+
+/** Opens The Iron Throne, optionally to join a game code typed into War of the Ring's Join box. */
+function openThrones(code) {
+  thronesCode.value = code || ''
+  appView.value = 'thrones'
+}
+
+function exitThrones() {
+  const url = new URL(window.location.href)
+  for (const key of ['thrones', 'seat']) url.searchParams.delete(key)
+  window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
+  thronesCode.value = ''
+  appView.value = 'game'
+}
 const mapEditorAuthorized = ref(false)
 const mapEditorToken = ref('')
 const mapEditorTokenInput = ref('')
@@ -841,7 +858,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <Gameplay v-if="appView === 'game'" @open-map-editor="openMapEditor" />
+  <ThronesGameplay v-if="appView === 'thrones'" :initial-code="thronesCode" @exit="exitThrones" />
+  <Gameplay v-else-if="appView === 'game'" @open-map-editor="openMapEditor" @open-thrones="openThrones" />
   <main v-else-if="!mapEditorAuthorized" class="map-editor-gate">
     <form class="map-editor-gate-card" @submit.prevent="authorizeMapEditor">
       <p class="section-eyebrow">RESTRICTED VIEW</p>

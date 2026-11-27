@@ -201,6 +201,73 @@ also listens on the local network for phone testing. For that local test, open
 the host page using Vite's printed **Network** URL rather than `localhost`, so
 the copied join link points to an address the phone can reach.
 
+## The Iron Throne (a Game of Thrones campaign)
+
+A second campaign on a map of Westeros and Essos. Choose **The Iron Throne** at
+the bottom of the War of the Ring home screen (or open `/?thrones=CODE`). Codes
+from either game can be typed into either Join box; the app opens the right one.
+
+The host sets the map width (2,500 miles by default), the last round (20) and
+whether the server plays the Dead when no one claims them. 3 to 8 players each
+claim a house on their own device and may choose which heir leads first:
+House Stark, Lannister, Targaryen, Baratheon, Greyjoy, Tyrell, Martell, or the
+Dead. Houses nobody claims become neutral castles. Every house plays for itself.
+
+The in-game **Rules** button has the full rules. In short:
+
+- **Turns.** Collect gold (1 a castle, 2 for your own seat, 3 for King's
+  Landing), move once, then attack once. Spend gold on levies, fortifications,
+  sellswords in Braavos or Pentos, or an Iron Bank loan.
+- **Movement and battle** work as in War of the Ring, with snow, desert,
+  rivers, mountains, forest and Valyria's volcanic ground. Armies sail from
+  port to port, using the whole turn. The Greyjoys sail from any coast, and
+  dragons fly. The Wall can only be crossed through a castle you hold.
+- **Succession.** When a leader falls, the next heir rises at the house's seat.
+  A house is out when its line ends or it holds no castle.
+- **Pacts.** Allies cannot attack each other and defend together. Breaking a
+  pact and attacking the same turn is a Red Wedding (+2 per die), and makes you
+  an oathbreaker for 3 rounds.
+- **Seasons.** Winter arrives in round 8 (Fate cards can bring it sooner). Snow
+  creeps south, and the Dead march on the Wall. The Night King dies only to
+  dragons, Valyrian steel (Jon, Jaime or Arya), or Dragonstone's dragonglass.
+- **Each house** has a passive ability and a once-per-game power. A Fate card
+  is drawn every round after the first.
+- **Winning.** Hold King's Landing for 3 rounds in a row (allies share the win as
+  Hand of the King), hold 7 of the 9 great seats, slay the Night King while
+  holding 3, or be the last house standing. The Dead win by taking King's
+  Landing or 5 castles south of the Wall. After the last round, the most great
+  seats wins.
+
+The rules are in `backend/src/main/java/org/wargames/ThronesGame.java`, with
+their fixed data in `ThronesRules.java`, the server's Dead player in
+`ThronesDeadAi.java`, and tests in `ThronesGameTest.java`. The API is under
+`/api/thrones`. Saved games share the `game_sessions` table, marked by a
+`game_type` column.
+
+Portraits are optional, as for War of the Ring. Put square images in
+`frontend/public/portraits/thrones/`, named after the leader in lowercase with
+hyphens: `ned-stark.png`, `jon-snow.png`, `daenerys-targaryen.png`,
+`night-king.png`, and so on. A leader without one shows the house sigil.
+
+### The Westeros map
+
+The art is `maps/westeros/source-art.webp` (2:1, like the Middle-earth map).
+Place positions and the line of the Wall are in `maps/westeros/design.json`, in
+map percentages, sitting on the castles painted in the art. After changing
+either file, rebuild:
+
+```sh
+python scripts/build_westeros_map.py                       # map.png/map.webp and westeros-map.json
+python scripts/generate_terrain.py --profile westeros     # terrain strokes and land/water mask
+```
+
+The second command writes `backend/src/main/resources/westeros-terrain.json` and
+`westeros-land-mask.png`. The mask is used for sailing. Add `--preview
+terrain/westeros-preview.png` to see what was detected. The source art is
+1774 × 887, so `map.png` is a sharpened 4096 × 2048 enlargement and close
+zooms look soft. Replace `source-art.webp` with a larger 2:1 version (an AI
+upscale, say) to sharpen it. The Iron Throne screen does not load HD tiles yet.
+
 ## Quick test games
 
 To try a change with every seat filled, run:

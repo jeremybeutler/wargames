@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "thrones-api-test",
+      "runtimeExecutable": "mvn",
+      "runtimeArgs": ["-o", "-q", "-f", "backend/pom.xml", "spring-boot:run", "-Dspring-boot.run.profiles=local"],
+      "env": { "PORT": "8091", "DATABASE_URL": "jdbc:h2:mem:thronestest;DB_CLOSE_DELAY=-1" },
+      "port": 8091
+    },
+    {
+      "name": "thrones-web-test",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["--prefix", "frontend", "vite", "frontend", "--port", "5174", "--strictPort"],
+      "env": { "API_PROXY_TARGET": "http://localhost:8091" },
+      "port": 5174
+    }
+  ]
+}

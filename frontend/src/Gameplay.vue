@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import QRCode from 'qrcode'
 
-const emit = defineEmits(['open-map-editor'])
+const emit = defineEmits(['open-map-editor', 'open-thrones'])
 const roster = [
   { id: 'frodo', name: 'Frodo', team: 'Free Peoples', army: 'Hobbits', units: 1, start: 'Hobbiton', initial: 'F' },
   { id: 'theoden', name: 'Théoden', team: 'Free Peoples', army: 'Riders of Rohan', units: 2, start: 'Edoras', initial: 'T' },
@@ -529,7 +529,14 @@ async function findGame() {
   notice.value = ''
   isSubmitting.value = true
   try {
-    const room = await apiRequest(`/api/games/${encodeURIComponent(joinCode.value.trim().toUpperCase())}`)
+    const wanted = joinCode.value.trim().toUpperCase()
+    // One Join box serves every campaign: Iron Throne codes open that game instead.
+    const lookup = await apiRequest(`/api/game-codes/${encodeURIComponent(wanted)}`)
+    if (lookup.type === 'iron-throne') {
+      emit('open-thrones', wanted)
+      return
+    }
+    const room = await apiRequest(`/api/games/${encodeURIComponent(wanted)}`)
     if (room.status !== 'lobby') throw new Error('This campaign has already started.')
     game.value = room
     code.value = room.code
@@ -1650,6 +1657,9 @@ onBeforeUnmount(() => {
         <div class="welcome-divider"><span>or</span></div>
         <button class="text-button" type="button" @click="currentView = 'host'">Host a game</button>
         <p class="welcome-footnote">Enter the code shared by your host. Saved seats stay available on this device.</p>
+        <button class="thrones-link" type="button" @click="emit('open-thrones', '')">
+          <strong>The Iron Throne</strong><small>A Game of Thrones campaign · Westeros &amp; Essos →</small>
+        </button>
       </div>
     </section>
 
@@ -2136,6 +2146,10 @@ onBeforeUnmount(() => {
 .game-app h1 { margin: 8px 0; color: #f2efe4; font: 600 26px/1.1 'Barlow Condensed', sans-serif; }
 .muted-copy { color: var(--muted); font-size: 11px; line-height: 1.55; }
 .welcome-screen { flex: 1; display: grid; place-items: center; padding: 24px 16px; background: linear-gradient(#101b20b8,#101b20d9), url('/map-assets/middle-earth/map.webp') center / cover; }
+.thrones-link { width: 100%; margin-top: 16px; display: grid; gap: 3px; padding: 11px 14px; border: 1px solid #7a3a2e; border-radius: 10px; background: linear-gradient(90deg, #2a1417, #1b1a1f); color: #f2dfb4; text-align: left; cursor: pointer; font: inherit; }
+.thrones-link strong { font: 600 15px 'Cinzel', 'Barlow Condensed', serif; letter-spacing: 1px; }
+.thrones-link small { color: #c7a98d; font-size: 11px; }
+.thrones-link:hover { border-color: #c79a4c; }
 .welcome-card { width: min(100%, 560px); padding: 32px clamp(22px, 6vw, 78px) 25px; border: 1px solid #927743; border-radius: 17px; background: #142329ec; box-shadow: 0 24px 70px #080f13aa; text-align: center; }
 .ring-emblem { width: 48px; height: 48px; display: grid; place-items: center; margin: 0 auto 10px; border: 1px solid var(--gold); border-radius: 50%; }
 .ring-emblem span { width: 16px; height: 16px; border: 4px solid var(--gold); border-radius: 50%; box-shadow: 0 0 9px #d6b66f77; }

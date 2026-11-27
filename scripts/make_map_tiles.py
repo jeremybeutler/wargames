@@ -12,6 +12,10 @@ model realesr-animevideov3, scale 2):
       -o map-8k.png -n realesr-animevideov3 -s 2
   python scripts/make_map_tiles.py map-8k.png
 
+Other campaigns' maps use the same layout; name the campaign's map folder second:
+
+  python scripts/make_map_tiles.py westeros-8k.png westeros
+
 Each tile carries BLEED extra pixels on every inner edge so neighbouring tiles overlap with
 identical pixels; the frontend positions them with the same numbers (see HD_TILE_* in
 Gameplay.vue). Requires Pillow with WebP support.
@@ -23,14 +27,14 @@ from PIL import Image
 
 Image.MAX_IMAGE_PIXELS = None
 ROOT = Path(__file__).resolve().parent.parent
-OUT = ROOT / 'frontend/public/map-assets/middle-earth'
 COLS, ROWS, BLEED = 8, 4, 2
 QUALITY = 82
 
 
 def main():
-    if len(sys.argv) != 2:
-        sys.exit('usage: python scripts/make_map_tiles.py <upscaled map, 8192 x 4096>')
+    if len(sys.argv) not in (2, 3):
+        sys.exit('usage: python scripts/make_map_tiles.py <upscaled map, 8192 x 4096> [map folder, default middle-earth]')
+    OUT = ROOT / 'frontend/public/map-assets' / (sys.argv[2] if len(sys.argv) == 3 else 'middle-earth')
     hd = Image.open(sys.argv[1]).convert('RGB')
     if hd.size != (8192, 4096):
         sys.exit(f'expected an 8192 x 4096 image, got {hd.size[0]} x {hd.size[1]}')
